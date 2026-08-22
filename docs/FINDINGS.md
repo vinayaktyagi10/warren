@@ -131,3 +131,114 @@ Two caveats carried forward:
   (`010`, `03208`), accounts do not (`210`, `331579`). Joined raw, all 5,078,345
   transactions fail to match an account and every account-level feature returns
   empty without raising an error. Both sides are normalised at ingest.
+
+---
+
+# Ring detection on IBM AML
+
+## 5. The generator's quiet tail would have faked the metrics
+
+Background traffic stops after 2022-09-10 while laundering patterns already in
+flight keep playing out. Daily volume falls from ~200k–1.1M transfers to 396,
+then 281, 184, 121, 46, 46, 23, 11 — and the laundering rate over that stretch
+runs at **58% to 73% against a 0.1% base rate**.
+
+A 70/30 temporal split lands the entire test set inside that tail. Measured
+there the detector reported precision 0.598 and recall 1.000, which is not a
+result, it is an artefact of testing on a stretch of ledger where most transfers
+really are laundering.
+
+`detect.ActivePeriod` locates the collapse — the first day below a tenth of the
+median daily volume — and trims it, rather than hardcoding a date that would not
+survive contact with another dataset variant. Everything below is measured on
+the remaining period, which retains 2,554 of 3,209 ring transfers (79.6%).
+
+## 6. Channel and amount cut the search space by 88%
+
+Laundering is 86.6% ACH against 11.75% of ordinary traffic, and never uses Wire
+or Reinvestment. Filtering to ACH alone reduces 5,078,345 transfers to 600,797
+while keeping 86.6% of laundering — the base rate rises from 0.1019% to 0.746%.
+
+This is a property of this generator. A detector for a real institution would
+have to re-derive its own channel profile.
+
+## 7. Connectivity finds the rings but cannot rank them
+
+The graph pass — filter, window, connect — recovers **289 of 370 rings (78.1%)**
+at 88.6% transaction recall. It also raises 95,774 candidates covering two
+thirds of the filtered ledger, for 1.0% precision. High recall, unusable alone.
+
+Windowing is what makes it work at all. Some accounts sit in dozens of separate
+rings, one in 32; across the full ledger those hubs chain unrelated rings into a
+single component, the same failure that sank the IEEE-CIS attempt.
+
+## 8. What separates a ring from an ordinary cluster
+
+Comparing candidates that contain a labelled ring against those that do not:
+
+| feature | ring median | ordinary median | lift |
+|--------------|------------:|----------------:|------:|
+| conservation | 0.35 | 0.02 | 15.1x |
+| max_amount | 340,492 | 26,454 | 12.9x |
+| total_amount | 711,525 | 63,418 | 11.2x |
+| mean_amount | 43,998 | 9,222 | 4.8x |
+| txns | 13 | 6 | 2.2x |
+| accounts | 8 | 4 | 2.0x |
+| pass_through | 0.33 | 0.25 | 1.3x |
+| density | 1.57 | 1.36 | 1.15x |
+| span_hours | 57.1 | 50.6 | 1.13x |
+
+The strongest separator is also the most meaningful one: **conservation**, how
+closely value entering an intermediary leaves it again. A mule forwards what it
+receives; an ordinary account keeps or tops up its balance. `density` and
+`span_hours` carry nothing and are kept only to let the fit say so itself.
+
+## 9. Measured results, held out
+
+Ranking is logistic regression over nine candidate-level features, fitted on the
+first 70% of the active period and measured on the last 30%, which the fit never
+saw. The split is temporal because windows overlap: shuffling rows would put
+near-duplicate views of one ring on both sides of the split.
+
+Candidate-level ranking is a far healthier problem than scoring transfers — one
+candidate in fifty bears a ring, against one transfer in a thousand.
+
+Held out: 21,483 candidates, 182 labelled rings.
+
+| alert budget | rings found | precision | recall | value held |
+|-------------:|------------:|----------:|-------:|-----------:|
+| 50 | 37/182 | 0.1308 | 0.2424 | 3.6bn |
+| 100 | 41/182 | 0.0844 | 0.2749 | 14.3bn |
+| 250 | 67/182 | 0.0640 | 0.4113 | 31.0bn |
+| 500 | 88/182 | 0.0462 | 0.4989 | 44.7bn |
+| 1,000 | 101/182 | 0.0341 | 0.5823 | 67.5bn |
+| 2,500 | 139/182 | 0.0227 | 0.6883 | 112.1bn |
+| all 21,483 | 182/182 | 0.0093 | 1.0000 | 311.6bn |
+
+At 50 alerts precision is 13.1% against a 0.93% base rate among candidates and
+0.1% in the raw ledger — roughly a 100x lift — while surfacing a fifth of the
+rings present. The alert budget is the real product decision, and it is a
+straight trade: more alerts, more rings, worse hit rate, more legitimate money
+held up.
+
+The value-held column is deliberately blunt. Holding 3.6bn of legitimate
+transfers to catch 37 rings is a cost, and quoting recall without it would be
+dishonest.
+
+## 10. Two ring shapes are not really being found
+
+| typology | recall |
+|----------------|-------:|
+| FAN-OUT | 95.8% |
+| RANDOM | 95.1% |
+| CYCLE | 92.6% |
+| FAN-IN | 92.5% |
+| SCATTER-GATHER | 90.9% |
+| GATHER-SCATTER | 90.2% |
+| BIPARTITE | 40.0% |
+| STACK | 35.0% |
+
+STACK and BIPARTITE are the largest and loosest structures — STACK averages 10.8
+senders and 15.9 accounts across 21.7 transfers. They are the shapes most likely
+to be split across a window boundary or broken by the degree cap. Reporting one
+averaged recall would have hidden two shapes the detector barely finds.
