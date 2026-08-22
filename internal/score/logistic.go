@@ -21,9 +21,9 @@ import (
 	"strings"
 )
 
-// FeatureNames documents the vector layout. Order matters: coefficients are
-// reported against these names.
-var FeatureNames = []string{
+// RingFeatureNames documents the candidate-level vector layout. Order matters:
+// coefficients are reported against these names.
+var RingFeatureNames = []string{
 	"log_total_amount",
 	"log_max_amount",
 	"log_mean_amount",
@@ -35,8 +35,6 @@ var FeatureNames = []string{
 	"span_hours",
 }
 
-const NumFeatures = 9
-
 // Standardizer rescales features to zero mean and unit variance. Without it the
 // amount features, which run to hundreds of millions, would dominate the
 // gradient and the model would effectively ignore everything else.
@@ -46,10 +44,11 @@ type Standardizer struct {
 }
 
 func Fit(rows [][]float64) *Standardizer {
-	s := &Standardizer{Mean: make([]float64, NumFeatures), Std: make([]float64, NumFeatures)}
 	if len(rows) == 0 {
-		return s
+		return &Standardizer{}
 	}
+	n := len(rows[0])
+	s := &Standardizer{Mean: make([]float64, n), Std: make([]float64, n)}
 	for _, r := range rows {
 		for j, v := range r {
 			s.Mean[j] += v
@@ -86,6 +85,11 @@ type Model struct {
 	Weights []float64
 	Bias    float64
 	Scaler  *Standardizer
+
+	// Names labels the coefficients for Explain. Set by the caller, because the
+	// same fitting code serves both the candidate ranker and the per-transaction
+	// baseline the ranker is measured against.
+	Names []string
 }
 
 // TrainOpts controls fitting.
@@ -127,14 +131,15 @@ func Train(rows [][]float64, labels []bool, opts TrainOpts) *Model {
 		}
 	}
 
-	m := &Model{Weights: make([]float64, NumFeatures), Scaler: scaler}
-	n := float64(len(scaled))
-	if n == 0 {
-		return m
+	if len(rows) == 0 {
+		return &Model{Scaler: scaler}
 	}
+	numFeatures := len(rows[0])
+	m := &Model{Weights: make([]float64, numFeatures), Scaler: scaler}
+	n := float64(len(scaled))
 
 	for epoch := 0; epoch < opts.Epochs; epoch++ {
-		gradW := make([]float64, NumFeatures)
+		gradW := make([]float64, numFeatures)
 		gradB := 0.0
 
 		for i, x := range scaled {
@@ -175,9 +180,9 @@ func (m *Model) Explain() string {
 		name string
 		w    float64
 	}
-	ws := make([]wf, 0, NumFeatures)
-	for i, name := range FeatureNames {
-		ws = append(ws, wf{name, m.Weights[i]})
+	ws := make([]wf, 0, len(m.Weights))
+	for i := range m.Weights {
+		ws = append(ws, wf{m.featureName(i), m.Weights[i]})
 	}
 	sort.Slice(ws, func(i, j int) bool { return math.Abs(ws[i].w) > math.Abs(ws[j].w) })
 
@@ -191,6 +196,18 @@ func (m *Model) Explain() string {
 		fmt.Fprintf(&b, "  %-18s %+8.3f  %s suspicion\n", x.name, x.w, dir)
 	}
 	return b.String()
+}
+
+// featureName labels a coefficient, falling back to the candidate-level names
+// when the shape matches and to the index when nothing else is known.
+func (m *Model) featureName(i int) string {
+	if i < len(m.Names) {
+		return m.Names[i]
+	}
+	if len(m.Names) == 0 && len(m.Weights) == len(RingFeatureNames) {
+		return RingFeatureNames[i]
+	}
+	return fmt.Sprintf("feature_%d", i)
 }
 
 func sigmoid(z float64) float64 {

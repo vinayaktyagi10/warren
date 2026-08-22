@@ -242,3 +242,81 @@ STACK and BIPARTITE are the largest and loosest structures — STACK averages 10
 senders and 15.9 accounts across 21.7 transfers. They are the shapes most likely
 to be split across a window boundary or broken by the degree cap. Reporting one
 averaged recall would have hidden two shapes the detector barely finds.
+
+---
+
+# 11. Measured against a per-transaction baseline
+
+The claim that laundering is invisible row by row is worth nothing unless the
+obvious alternative is built properly and measured. `internal/baseline` is a
+competent tabular scorer of the kind most AML stacks run today: amount, timing,
+and account-level aggregates — sender and receiver counterparty counts, transfer
+counts, volumes, and amount relative to each account's own mean. Velocity
+features are included deliberately, because legacy systems do have them and
+omitting them would be rigging the fight.
+
+Both systems are fitted on the same period, judged on the same held-out period,
+and allowed to flag **the same number of transfers**. The budget is counted in
+transfers rather than alerts because the two raise different objects — WARREN
+raises groups, the baseline raises rows — and equal transfers is the comparison
+neither side can game.
+
+Held out: 177,634 transfers, 1,299 laundering (0.731%), 208 labelled rings. Both
+flag 1,713 transfers.
+
+| | per-transaction | WARREN |
+|-----------------------------|----------------:|-------:|
+| laundering transfers caught | 162 | **224** |
+| precision | 9.46% | **13.08%** |
+| recall | 12.47% | **17.24%** |
+| complete rings recovered | 24/208 | **32/208** |
+
+WARREN wins by roughly 1.38x on every measure. That is a real margin, not a
+crushing one, and it should be quoted as what it is.
+
+## The first version of this experiment said the opposite
+
+Run as originally written, the baseline beat WARREN outright — 18.56% precision
+against 13.08%, and 64 rings against 37. Two methodology errors produced that,
+both favouring the baseline:
+
+- **Target leakage.** Account aggregates were computed over the whole ledger, so
+  a mule's counterparty count was inflated by the very laundering the model was
+  being asked to predict. Aggregates now come from the fitting period only.
+- **The baseline was fishing in WARREN's pond.** Scope was restricted to
+  transfers WARREN's graph pass had already surfaced, where the base rate is
+  0.93% rather than 0.1%. That hands the baseline WARREN's recall for free and
+  asks it merely to re-rank inside it, which compares one approach against
+  itself. Scope is now the entire held-out period.
+
+Worth recording plainly: the same discipline that killed three flattering
+results also killed an unflattering one. The correction was made because the
+method was wrong, not because the answer was unwelcome.
+
+## Row-level invisibility
+
+The structural point matters more than the margin. Ranking every held-out
+transfer by baseline score and locating each labelled ring within that ranking:
+
+**68 of 208 rings (33%) have not a single transfer in the riskiest 10%.**
+
+The largest rings a per-transaction scorer sees nothing of:
+
+| ring | transfers | best percentile | median percentile |
+|-----:|----------:|----------------:|------------------:|
+| 270 | 9 | 11.9% | 28.6% |
+| 247 | 8 | 15.9% | 44.3% |
+| 274 | 7 | 22.3% | 25.1% |
+| 285 | 7 | 19.1% | 24.8% |
+| 307 | 6 | 55.5% | 87.8% |
+| 320 | 6 | 12.7% | 17.6% |
+
+Ring 270 is a real nine-transfer laundering ring whose most suspicious-looking
+transfer only reaches the top 11.9%. Surfacing one of its nine transfers means
+alerting on roughly 21,000 transfers. Ring 307's best transfer sits at the 55th
+percentile — more ordinary-looking than half the ledger.
+
+This is what 95% of laundering transfers sitting inside the ordinary amount
+range for their channel looks like from the detector's side. The evidence is not
+in the row. It is in the relationship between rows, and no amount of feature
+engineering on a single transaction recovers it.

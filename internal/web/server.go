@@ -521,8 +521,8 @@ type weightRow struct {
 }
 
 func (s *Server) modelWeights() []weightRow {
-	rows := make([]weightRow, 0, len(score.FeatureNames))
-	for i, n := range score.FeatureNames {
+	rows := make([]weightRow, 0, len(score.RingFeatureNames))
+	for i, n := range score.RingFeatureNames {
 		w := s.model.Weights[i]
 		rows = append(rows, weightRow{n, w, math.Abs(w)})
 	}
