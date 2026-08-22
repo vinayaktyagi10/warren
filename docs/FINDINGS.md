@@ -1,0 +1,86 @@
+# Findings
+
+Measurements taken against the full IEEE-CIS training set (590,540 transactions,
+20,663 frauds, 3.499% base rate). Every figure here is reproducible from the
+commands in the README.
+
+## 1. Fraud is concentrated in accounts, not scattered across transactions
+
+Resolving transactions to accounts via `card1 + addr1 + (day − D1)` and looking
+only at accounts with two or more transactions:
+
+| pattern   | accounts | share  |
+|-----------|---------:|-------:|
+| all clean |   80,841 | 96.75% |
+| all fraud |    1,484 |  1.78% |
+| mixed     |    1,232 |  1.47% |
+
+Fraud is close to all-or-nothing per account. If fraud were an independent
+per-transaction event at 3.5%, the expected number of entirely-fraudulent
+accounts would be **40.9**. The observed number is **1,484** — a 36× excess —
+covering 7,289 transactions, or **35% of all fraud in the dataset**.
+
+This is the finding the project rests on: the account is the right unit of
+defence, because compromise is an account-level event.
+
+## 2. Unidentifiable accounts are disproportionately fraudulent
+
+11.3% of transactions (66,794) are missing at least one of `card1`, `addr1` or
+`D1` and cannot be resolved to an account at all. Those carry **7,768 frauds —
+an 11.6% rate against the 3.5% base, and 37.6% of all fraud**.
+
+Missing identity data is therefore strongly predictive in its own right. It is
+treated as a model feature rather than as grouping evidence, for the reason in
+section 4.
+
+## 3. Presence of device data is itself a weak signal
+
+Transactions that join the identity table at all run at roughly 6.2–6.5% fraud
+against the 3.5% base.
+
+## 4. Cross-account ring linking does not work on this dataset — rejected
+
+The original hypothesis was that distinct accounts sharing infrastructure would
+reveal one operator behind many identities. Two rules were implemented and
+tested: shared device fingerprint (`DeviceInfo + id_30 + id_31 + id_33`) and
+shared card number, each with a fanout cap to discard values so common they are
+demographic rather than identifying.
+
+Measured against the population that could actually be linked — accounts with
+device data, which is the only fair comparison:
+
+| cohort         | accounts | transactions | frauds | fraud rate |
+|----------------|---------:|-------------:|-------:|-----------:|
+| in a ring      |   30,169 |       53,221 |  3,461 |     6.503% |
+| not in a ring  |   61,139 |       96,428 |  5,962 |     6.183% |
+
+**1.05×. There is no signal here.** Ring membership tells you almost nothing
+that "has device data" does not already tell you.
+
+Two earlier versions looked better and were both wrong:
+
+- **Fallback account keys manufactured the signal.** Falling back to the raw
+  card tuple when `D1`/`addr1` were missing produced pseudo-accounts averaging
+  224 transactions, because `card1` holds only ~18k distinct values across 590k
+  transactions and is not a unique card. Those pooled pseudo-accounts linked
+  into a single 236-member "ring" holding 7,093 frauds and virtually all of the
+  apparent enrichment. Replacing the fallback with per-transaction singletons —
+  refusing to guess at an account that cannot be identified — removed it.
+- **Unconstrained transitivity manufactured a giant component.** Requiring only
+  one shared value to join two accounts chained 2,219 individually reasonable
+  links (average fanout under 7) into one 8,930-account "ring", with the next
+  largest at 115. Requiring two independent shared values breaks the chains.
+
+The negative result stands after both fixes, and it is a property of the data
+rather than of the implementation: IEEE-CIS is anonymised and carries no email
+address, phone, IP or account identifier — only a domain and a coarse device
+string. The fields that would actually tie separate accounts to one operator
+are not present.
+
+The linking code is kept and remains configurable, but nothing is claimed for
+it. A detector is not allowed to keep a component that failed its own test.
+
+## Consequence
+
+Detection targets the level where the evidence is: account-level abuse, at 36×
+concentration, plus the resolvability and device signals in sections 2 and 3.
