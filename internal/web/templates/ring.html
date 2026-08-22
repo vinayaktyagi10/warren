@@ -1,0 +1,186 @@
+{{define "ring.html"}}{{template "head" .}}
+{{$r := .Ring}}
+<div class="wrap wrap-wide">
+
+  <div class="row mb">
+    <div>
+      <h1 style="margin:0">Ring #{{$r.Rank}} <span class="shape" style="font-size:14px">{{$r.Typology}}</span></h1>
+      <div class="small muted" style="margin-top:4px">
+        window opening {{$r.Window.Format "2006-01-02 15:04"}} · score
+        <span class="mono v-pink">{{f3 $r.Score}}</span>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="row">
+      {{if gt .Prev 0}}<a class="btn btn-ghost btn-sm" href="/ring/{{.Prev}}">← previous</a>{{end}}
+      {{if le .Next .Last}}<a class="btn btn-ghost btn-sm" href="/ring/{{.Next}}">next →</a>{{end}}
+    </div>
+  </div>
+
+  <div class="grid grid-2">
+    <div>
+      <div class="card mb">
+        <h2>Money movement</h2>
+        <svg class="graph" viewBox="0 0 800 600" width="100%" height="420">
+          <defs>
+            <marker id="ah" markerWidth="7" markerHeight="7" refX="6" refY="2.4"
+                    orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,4.8 L6,2.4 z" fill="#5a4e4f"/>
+            </marker>
+            <marker id="ahl" markerWidth="7" markerHeight="7" refX="6" refY="2.4"
+                    orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,4.8 L6,2.4 z" fill="#fd6883"/>
+            </marker>
+          </defs>
+          {{range $r.Edges}}
+            <line x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}"
+                  class="{{if .Laundering}}e-laundering{{else}}e-normal{{end}}"
+                  stroke-width="{{if .Laundering}}1.6{{else}}1{{end}}"
+                  marker-end="url(#{{if .Laundering}}ahl{{else}}ah{{end}})"
+                  opacity="{{if .Laundering}}0.9{{else}}0.5{{end}}"/>
+          {{end}}
+          {{range $r.Nodes}}
+            <circle cx="{{.X}}" cy="{{.Y}}" r="{{if $r.ShowLabels}}7{{else}}5.5{{end}}" class="n-{{.Kind}}"/>
+            {{if $r.ShowLabels}}
+            <text x="{{.X}}" y="{{.Y}}" dy="-11" text-anchor="middle">{{.Label}}</text>
+            {{end}}
+          {{end}}
+        </svg>
+        <div class="legend">
+          <span><i class="swatch" style="background:#f38d70"></i> source (only sends)</span>
+          <span><i class="swatch" style="background:#a8a9eb"></i> intermediary</span>
+          <span><i class="swatch" style="background:#85dacc"></i> sink (only receives)</span>
+          <span><i class="swatch swatch-line" style="background:#fd6883"></i> labelled laundering</span>
+        </div>
+        {{if not $r.ShowLabels}}
+        <div class="section-note">
+          Account labels are hidden above 24 accounts — at this size they collide into an
+          unreadable band and obscure the edges, which carry the meaning.
+        </div>
+        {{end}}
+      </div>
+    </div>
+
+    <div>
+      <div class="card mb">
+        <h2>Evidence</h2>
+        <div class="eviz">
+          <div><div class="k">Accounts</div><div class="v">{{$r.Accounts}}</div></div>
+          <div><div class="k">Transfers</div><div class="v">{{$r.Txns}}</div></div>
+          <div><div class="k">Total moved</div><div class="v v-orange">{{money $r.Total}}</div></div>
+          <div><div class="k">Largest transfer</div><div class="v">{{money $r.Max}}</div></div>
+          <div><div class="k">Conservation</div><div class="v {{if gt $r.Conservation 0.5}}v-yellow{{end}}">{{f3 $r.Conservation}}</div></div>
+          <div><div class="k">Pass-through</div><div class="v">{{f3 $r.PassThrough}}</div></div>
+          <div><div class="k">Window</div><div class="v">{{f2 $r.SpanHours}}h</div></div>
+          <div><div class="k">Ranker score</div><div class="v v-pink">{{f3 $r.Score}}</div></div>
+        </div>
+        <div class="section-note">
+          <strong>Conservation</strong> is how closely value entering an intermediary leaves it
+          again. Near 1 means accounts forward almost exactly what they receive — mule behaviour.
+          It is the strongest single separator in this data, at 15× between rings and ordinary
+          clusters.
+        </div>
+      </div>
+
+      <div id="decision-slot">
+        {{if $r.Assessment}}
+          {{template "decision" $r.Assessment}}
+        {{else}}
+          <div class="card">
+            <h2>Assessment</h2>
+            <p class="muted small" style="margin-top:0">
+              Send this evidence to the assessor chain. The model recommends; the policy
+              decides what is actually permitted.
+            </p>
+            <button class="btn" id="assess-btn" onclick="assess({{$r.Rank}})">Assess this ring</button>
+          </div>
+        {{end}}
+      </div>
+
+      <div class="card mt">
+        <h2>Policy envelope</h2>
+        <table>
+          <tbody>
+            <tr><td class="muted">Block needs ranker score ≥</td><td class="num mono">{{f2 .Policy.BlockMinScore}}</td></tr>
+            <tr><td class="muted">Block needs stated confidence ≥</td><td class="num mono">{{f2 .Policy.BlockMinConfidence}}</td></tr>
+            <tr><td class="muted">Autonomous block ceiling</td><td class="num mono">{{money .Policy.BlockMaxAmount}}</td></tr>
+            <tr><td class="muted">Allow withheld at score ≥</td><td class="num mono">{{f2 .Policy.HoldMinScore}}</td></tr>
+          </tbody>
+        </table>
+        <div class="section-note">
+          The envelope binds both ways. It stops the model blocking on weak evidence, and
+          equally stops it waving through a group the ranker scored highly. An unrecognised
+          action is a malformed response and lands on review.
+        </div>
+      </div>
+
+      <div class="card mt">
+        <h2>Ground truth <span class="pill pill-muted">withheld from the assessor</span></h2>
+        {{if $r.IsRing}}
+          <p style="margin:0"><span class="pill pill-ring">{{$r.Laundering}} of {{$r.Txns}} transfers labelled laundering</span></p>
+        {{else}}
+          <p style="margin:0"><span class="pill pill-clean">no labelled laundering in this group</span></p>
+        {{end}}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+async function assess(rank) {
+  const btn = document.getElementById('assess-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> asking the assessor…';
+  try {
+    const res = await fetch('/api/assess/' + rank, {method: 'POST'});
+    if (!res.ok) throw new Error(await res.text());
+    render(await res.json());
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Assess this ring';
+    alert('Assessment failed: ' + e.message);
+  }
+}
+
+function render(d) {
+  const adj = (d.adjustments || []).map(a => '<li>' + esc(a) + '</li>').join('');
+  document.getElementById('decision-slot').innerHTML = `
+    <div class="decision ${d.actionClass}">
+      <div class="decision-head">
+        <span class="decision-action">${esc(d.action.toUpperCase())}</span>
+        ${d.adjusted ? `<span class="pill pill-hold">policy overrode ${esc(d.proposed.toUpperCase())}</span>` : ''}
+      </div>
+      <div class="decision-meta">confidence ${d.confidence.toFixed(2)} · via ${esc(d.source)} · ${esc(d.took)}</div>
+      <div class="rationale">${esc(d.rationale)}</div>
+      ${adj ? `<div class="override"><div class="override-title">Policy intervened</div><ul>${adj}</ul></div>` : ''}
+      <div class="chain-link" style="margin-top:14px">
+        recorded as audit entry #${d.auditSeq} · ${esc(d.auditHash.slice(0,32))}
+        &nbsp;<a href="/audit">view trail →</a>
+      </div>
+    </div>`;
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+</script>
+{{template "foot" .}}{{end}}
+
+{{define "decision"}}
+<div class="decision {{actionClass (printf "%s" .Action)}}">
+  <div class="decision-head">
+    <span class="decision-action">{{.Action}}</span>
+    {{if .Adjusted}}<span class="pill pill-hold">policy overrode {{.Proposed}}</span>{{end}}
+  </div>
+  <div class="decision-meta">confidence {{f2 .Confidence}} · via {{.Source}}</div>
+  <div class="rationale">{{.Rationale}}</div>
+  {{if .Adjustments}}
+  <div class="override">
+    <div class="override-title">Policy intervened</div>
+    <ul>{{range .Adjustments}}<li>{{.}}</li>{{end}}</ul>
+  </div>
+  {{end}}
+</div>
+{{end}}

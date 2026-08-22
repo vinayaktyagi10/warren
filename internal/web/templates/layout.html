@@ -1,0 +1,24 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · WARREN</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐇</text></svg>">
+</head>
+<body>
+<nav class="nav">
+  <div class="brand">WARREN<span class="dot">.</span><span class="brand-sub">coordinated abuse detection</span></div>
+  <div class="nav-links">
+    <a href="/" class="{{if eq .Nav "queue"}}active{{end}}">Alert queue</a>
+    <a href="/metrics" class="{{if eq .Nav "metrics"}}active{{end}}">Performance</a>
+    <a href="/audit" class="{{if eq .Nav "audit"}}active{{end}}">Audit trail</a>
+  </div>
+</nav>
+{{end}}
+
+{{define "foot"}}
+</body>
+</html>
+{{end}}

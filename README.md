@@ -11,8 +11,8 @@ The unit of defence is the ring, not the payment.
 
 ## Status
 
-Under construction. Ingest and entity resolution are in place for both datasets;
-detection and evaluation are not yet built.
+End to end: ingest, entity resolution, ring detection, ranking, bounded
+assessment, audit trail and an operator console.
 
 ## Data
 
@@ -59,7 +59,18 @@ for f in HI-Small_Trans.csv HI-Small_Patterns.txt HI-Small_accounts.csv; do
 done
 
 go run ./cmd/aml-ingest -data data/aml -set HI-Small   # ~55s
+
+go run ./cmd/detect                        # measured precision and recall
+go run ./cmd/assess -top 5                 # assess the top rings on the console
+go run ./cmd/serve                         # operator console on :8080
+go run ./cmd/audit -verify                 # check the decision log
 ```
+
+The console is the way to see it working. It runs the pipeline once at startup
+(about a minute) and then serves three views: the ranked alert queue, the
+evidence and decision for any single ring, and the audit trail with a verify
+button. `-offline` runs it with no model at all, deciding on the deterministic
+fallback, which is worth seeing.
 
 Every loader applies its schema from scratch, so all are safe to re-run, and
 each finishes by printing the figures that prove the load is faithful:
@@ -81,14 +92,49 @@ landing on nothing.
 cmd/ingest/        IEEE-CIS  -> Postgres via the COPY protocol
 cmd/aml-ingest/    IBM AML   -> Postgres, including the ring labels
 cmd/rings/         entity resolution and ring linking, with a concentration report
+cmd/detect/        ring detection, ranking and held-out evaluation
+cmd/assess/        the full pipeline through to bounded, recorded decisions
+cmd/serve/         the operator console
+cmd/audit/         read and verify the decision log
+cmd/apitest/       check a model provider is reachable before depending on it
+
 internal/aml/      AML schema, loader and patterns-file parser
+internal/agent/    bounded actions, the policy envelope, the fallback chain
+internal/audit/    hash-chained append-only decision log
 internal/csvutil/  field parsing shared by both loaders
 internal/db/       connection handling and IEEE-CIS schema
+internal/detect/   windowing, connected groups, features, evaluation
 internal/graph/    union-find, entity resolution, link rules
+internal/score/    logistic ranking of candidates
+internal/web/      console handlers, templates and styling
+
 docs/FINDINGS.md   measured results, including the rejected hypothesis
 data/              raw CSVs (gitignored)
 ```
 
+## How it decides
+
+Detection and ranking are separate jobs. The graph pass filters to plausible
+channels, cuts time into overlapping windows and finds connected groups; it
+recovers 78% of labelled rings but raises 95k candidates, so it is built for
+recall and unusable alone. A logistic ranker over nine candidate-level features
+sorts those into an alert queue. At a 50-alert budget: 13.1% precision against a
+0.1% base rate, recovering 37 of 182 rings.
+
+Assessment is where a model enters, and the rule is that the model proposes and
+the policy disposes. The recommendation is schema-constrained to three actions,
+then clamped in code: blocking requires a ranker score above 0.90, stated
+confidence above 0.80, and a sum under the autonomous ceiling; equally, a
+well-scored group cannot be waved through. An unrecognised action is a malformed
+response and lands on review. Every intervention is recorded beside the original
+proposal.
+
+The chain degrades rather than failing — a reasoning model, then a smaller one
+for when the first is busy, then a deterministic rule that cannot fail and never
+blocks. Decisions are hash-chained, so editing one afterwards is detectable.
+
 ## Configuration
 
 `DATABASE_URL` overrides the local development database.
+`GEMINI_API_KEY` enables the model tiers; without it the console still runs and
+decides on the deterministic fallback.

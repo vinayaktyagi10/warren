@@ -1,0 +1,129 @@
+{{define "metrics.html"}}{{template "head" .}}
+<div class="wrap wrap-wide">
+
+  <h1>Measured performance</h1>
+  <p class="subtitle">
+    Fitted on the earlier part of the ledger, measured on the later part it never saw.
+    The split is by time, not at random: detection windows overlap, so shuffling rows
+    would put near-duplicate views of the same ring on both sides of the split.
+  </p>
+
+  <div class="card mb">
+    <h2>Alert budget is the product decision</h2>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th class="num">Alerts</th>
+          <th class="num">Rings found</th>
+          <th class="num">Precision</th>
+          <th class="num">Recall</th>
+          <th class="num">Legitimate transfers held</th>
+          <th class="num">Value held</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Budgets}}
+        <tr>
+          <td class="num mono">{{num .TopK}}</td>
+          <td class="num"><span class="mono v-pink">{{.RingsFound}}</span><span class="faint">/{{.TotalRings}}</span></td>
+          <td class="num mono v-green">{{pct3 .Precision}}</td>
+          <td class="num mono v-yellow">{{pct3 .Recall}}</td>
+          <td class="num mono">{{num .TxnFP}}</td>
+          <td class="num mono v-orange">{{money .FPValue}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    <div class="section-note">
+      The value-held column is deliberately blunt. Catching more rings means holding more
+      legitimate money, and quoting recall without that cost would be dishonest. Precision
+      at the top of the queue runs roughly 100× the 0.1% base rate in the raw ledger.
+    </div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="card">
+      <h2>Recall by ring shape</h2>
+      <table>
+        <thead><tr><th>Shape</th><th class="num">Found</th><th class="num">Recall</th></tr></thead>
+        <tbody>
+        {{range .Shapes}}
+          <tr>
+            <td><span class="shape">{{.Typology}}</span></td>
+            <td class="num mono">{{.Found}}<span class="faint">/{{.Labelled}}</span></td>
+            <td class="num">
+              <div class="score-cell">
+                <span class="mono {{if gt .Rate 0.85}}v-green{{else if gt .Rate 0.5}}v-yellow{{else}}v-pink{{end}}">{{pct .Rate}}</span>
+                <span class="bar"><i style="width:{{pct .Rate}};background:{{if gt .Rate 0.85}}#adda78{{else if gt .Rate 0.5}}#f9cc6c{{else}}#fd6883{{end}}"></i></span>
+              </div>
+            </td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      <div class="section-note">
+        Reported per shape rather than as one average, which would have hidden that STACK
+        and BIPARTITE are barely found while every other shape clears 90%. They are the
+        largest and loosest structures, and the most likely to straddle a window boundary.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>What the ranker learned</h2>
+      <table>
+        <thead><tr><th>Feature</th><th class="num">Weight</th><th>Effect</th></tr></thead>
+        <tbody>
+        {{range .Weights}}
+          <tr>
+            <td class="mono small">{{.Name}}</td>
+            <td class="num mono {{if gt .Weight 0.0}}v-pink{{else}}v-teal{{end}}">{{f3 .Weight}}</td>
+            <td class="small muted">{{if gt .Weight 0.0}}raises suspicion{{else}}lowers suspicion{{end}}</td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      <div class="section-note">
+        Logistic regression over standardised features, so the coefficients are directly
+        comparable. A linear model was chosen over an ensemble deliberately: with nine
+        features the accuracy gain is small, and coefficients state exactly what the model
+        believes — which is what has to be defended when the system asks to hold money.
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt">
+    <h2>Unranked detection — what the graph pass alone achieves</h2>
+    <div class="grid grid-4">
+      <div class="stat">
+        <div class="stat-label">Rings recovered</div>
+        <div class="stat-value v-green">{{.Report.RingsFound}}<span class="faint" style="font-size:17px">/{{.Report.LabelledRings}}</span></div>
+        <div class="stat-note">candidate covers ≥50% of the ring</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Candidates raised</div>
+        <div class="stat-value v-lav">{{num .Report.Candidates}}</div>
+        <div class="stat-note">before ranking</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Transfers flagged</div>
+        <div class="stat-value">{{num .Report.FlaggedTxns}}</div>
+        <div class="stat-note">two thirds of the filtered ledger</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Accounts touched</div>
+        <div class="stat-value">{{num .Report.FlaggedAccounts}}</div>
+        <div class="stat-note">unusable without ranking</div>
+      </div>
+    </div>
+    <div class="section-note">
+      Detection and ranking are separate jobs. The graph pass is built for recall and finds
+      nearly every ring, but raises tens of thousands of ordinary account clusters alongside
+      them — because most groups of people who transact together are just people who transact
+      together. Ranking is what makes the output something a team could actually work.
+    </div>
+  </div>
+
+</div>
+{{template "foot" .}}{{end}}

@@ -1,0 +1,81 @@
+{{define "audit.html"}}{{template "head" .}}
+<div class="wrap">
+
+  <h1>Audit trail</h1>
+  <p class="subtitle">
+    Every decision, hash-chained. Each entry's hash covers its own content, its position,
+    and the hash before it — so altering a decision after the fact breaks every hash from
+    that point on, and the break is detectable without holding a copy of the original.
+  </p>
+
+  <div id="banner" class="banner"></div>
+
+  <div class="card mb">
+    <div class="row">
+      <button class="btn" onclick="verify()">Verify chain</button>
+      <div class="spacer"></div>
+      <div class="small faint" style="text-align:right">
+        Tampering with an entry edits it in place without touching a hash —<br>
+        exactly what someone covering their tracks would do.
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Recorded decisions</h2>
+    {{if .Entries}}
+      {{range .Entries}}
+      <div class="entry">
+        <div class="entry-seq">#{{.Seq}}</div>
+        <div class="entry-body">
+          <div class="entry-head">
+            <span class="pill pill-{{.ActionClass}}">{{.Action}}</span>
+            {{if .Adjusted}}<span class="pill pill-hold">policy overrode {{.Proposed}}</span>{{end}}
+            <span class="small faint">ring {{.RingID}} · confidence {{f2 .Confidence}} · via <span class="mono">{{.Source}}</span></span>
+            <span class="spacer"></span>
+            <span class="small faint">{{.DecidedAt.Format "15:04:05"}}</span>
+            <button class="btn btn-ghost btn-sm" onclick="tamper({{.Seq}})">tamper</button>
+          </div>
+          {{if .Rationale}}<div class="entry-rationale">{{.Rationale}}</div>{{end}}
+          {{range .Adjustments}}<div class="entry-adj">↳ {{.}}</div>{{end}}
+          <div class="chain-link">{{.Hash}}</div>
+        </div>
+      </div>
+      {{end}}
+    {{else}}
+      <p class="muted">
+        No decisions recorded yet. Open a ring from the
+        <a href="/">alert queue</a> and assess it.
+      </p>
+    {{end}}
+  </div>
+</div>
+
+<script>
+async function verify() {
+  const res = await fetch('/api/audit/verify', {method: 'POST'});
+  const d = await res.json();
+  const b = document.getElementById('banner');
+  b.className = 'banner show ' + (d.valid ? 'banner-ok' : 'banner-bad');
+  b.innerHTML = d.valid
+    ? `<div class="banner-title">Chain intact — ${d.entries} entries</div>
+       <div class="banner-body">Every entry hashes to its recorded value and links to the one before it.</div>`
+    : `<div class="banner-title">Chain broken at entry #${d.seq}</div>
+       <div class="banner-body">${esc(d.reason)}<br><br>
+         The decision recorded at entry #${d.seq} is not the decision that was made.</div>`;
+  b.scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+async function tamper(seq) {
+  if (!confirm('Rewrite entry #' + seq + " to say it was cleared? This edits the row in place and leaves every hash untouched.")) return;
+  await fetch('/api/audit/tamper/' + seq, {method: 'POST'});
+  location.reload();
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+</script>
+{{template "foot" .}}{{end}}
