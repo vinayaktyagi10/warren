@@ -303,3 +303,26 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
   animation: spin 700ms linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- hero ---------- */
+
+.hero-head h1 {
+  font-size: 30px;
+  line-height: 1.28;
+  letter-spacing: -0.015em;
+  margin-bottom: 12px;
+  max-width: 22ch;
+}
+.hero-head h1 br { display: block; }
+
+.big-stat {
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 700;
+  margin-right: 8px;
+  vertical-align: -2px;
+}
+
+/* Inverted bar: a low percentile (more suspicious) should read as a longer,
+   warmer bar, so the eye tracks risk rather than rank order. */
+.bar-inv > i { background: var(--teal); }

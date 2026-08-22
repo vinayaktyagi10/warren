@@ -25,6 +25,7 @@ import (
 
 	"github.com/vinayaktyagi10/warren/internal/agent"
 	"github.com/vinayaktyagi10/warren/internal/audit"
+	"github.com/vinayaktyagi10/warren/internal/baseline"
 	"github.com/vinayaktyagi10/warren/internal/detect"
 	"github.com/vinayaktyagi10/warren/internal/score"
 )
@@ -51,8 +52,16 @@ type Server struct {
 	ranked *detect.RankedReport
 	cfg    detect.Config
 
-	mu       sync.RWMutex
-	decided  map[int]agent.Assessment
+	// The per-transaction scorer WARREN is measured against, plus where each
+	// held-out transfer ranked under it.
+	baseline      *baseline.Model
+	txnPercentile map[int32]float64
+	comparison    baseline.Comparison
+	heroPattern   int32
+	heroTxns      []*detect.Txn
+
+	mu         sync.RWMutex
+	decided    map[int]agent.Assessment
 	preparedAt time.Time
 }
 
@@ -61,16 +70,21 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg detect.Config,
 	chain *agent.Chain, auditLog *audit.Log, trainFraction float64) (*Server, error) {
 
 	funcs := template.FuncMap{
-		"pct":      func(f float64) string { return fmt.Sprintf("%.1f%%", 100*f) },
-		"pct3":     func(f float64) string { return fmt.Sprintf("%.2f%%", 100*f) },
-		"money":    money,
-		"num":      humanInt,
-		"f2":       func(f float64) string { return fmt.Sprintf("%.2f", f) },
-		"f3":       func(f float64) string { return fmt.Sprintf("%.3f", f) },
-		"short":    func(s string) string { if len(s) > 16 { return s[:16] }; return s },
-		"upper":    func(s string) string { return template.HTMLEscapeString(s) },
+		"pct":   func(f float64) string { return fmt.Sprintf("%.1f%%", 100*f) },
+		"pct3":  func(f float64) string { return fmt.Sprintf("%.2f%%", 100*f) },
+		"money": money,
+		"num":   humanInt,
+		"f2":    func(f float64) string { return fmt.Sprintf("%.2f", f) },
+		"f3":    func(f float64) string { return fmt.Sprintf("%.3f", f) },
+		"short": func(s string) string {
+			if len(s) > 16 {
+				return s[:16]
+			}
+			return s
+		},
+		"upper":       func(s string) string { return template.HTMLEscapeString(s) },
 		"actionClass": actionClass,
-		"add":      func(a, b int) int { return a + b },
+		"add":         func(a, b int) int { return a + b },
 	}
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(content, "templates/*.html")
 	if err != nil {
@@ -110,7 +124,8 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	}
 
 	all := detect.Detect(led, s.cfg)
-	train, test := detect.Split(all, detect.SplitTime(led, trainFraction))
+	cut := detect.SplitTime(led, trainFraction)
+	train, test := detect.Split(all, cut)
 	s.model = score.Train(detect.Vectors(train), detect.Labels(led, train), score.DefaultTrainOpts())
 	s.candidates = test
 
@@ -128,6 +143,14 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	s.ranked = detect.EvaluateRanked(led, test, s.scores,
 		[]int{50, 100, 250, 500, 1000, 2500, len(test)})
 
+	s.prepareBaseline(led, cut)
+	s.heroPattern, s.heroTxns = s.pickHero()
+	if s.heroPattern == 0 {
+		log.Printf("no ring met the hero criteria; the console opens on the queue")
+	} else {
+		log.Printf("hero case: ring %d, %d transfers", s.heroPattern, len(s.heroTxns))
+	}
+
 	s.preparedAt = time.Now()
 	log.Printf("prepared %d candidates in %s", len(all), time.Since(start).Round(time.Millisecond))
 	return nil
@@ -136,7 +159,8 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.FileServerFS(content))
-	mux.HandleFunc("GET /{$}", s.handleDashboard)
+	mux.HandleFunc("GET /{$}", s.handleHero)
+	mux.HandleFunc("GET /queue", s.handleDashboard)
 	mux.HandleFunc("GET /ring/{rank}", s.handleRing)
 	mux.HandleFunc("POST /api/assess/{rank}", s.handleAssess)
 	mux.HandleFunc("GET /audit", s.handleAudit)
@@ -151,14 +175,14 @@ func (s *Server) Routes() http.Handler {
 // ---------------------------------------------------------------------------
 
 type ringView struct {
-	Rank       int
-	ShowLabels bool
-	Score      float64
-	Typology   string
-	Accounts   int
-	Txns       int
-	Total      float64
-	Max        float64
+	Rank         int
+	ShowLabels   bool
+	Score        float64
+	Typology     string
+	Accounts     int
+	Txns         int
+	Total        float64
+	Max          float64
 	Conservation float64
 	PassThrough  float64
 	SpanHours    float64
@@ -175,12 +199,13 @@ type ringView struct {
 }
 
 type nodeView struct {
-	ID     string
-	Label  string
-	X, Y   float64
-	In     float64
-	Out    float64
-	Kind   string // source, sink, intermediary
+	ID    string
+	Label string
+	X, Y  float64
+	In    float64
+	Out   float64
+	Kind  string // source, sink, intermediary
+	Hub   bool   // drawn larger at the centre of a fan
 }
 
 type edgeView struct {
@@ -188,6 +213,13 @@ type edgeView struct {
 	Amount         float64
 	Laundering     bool
 	MidX, MidY     float64
+
+	// SelfLoop marks a transfer from an account back to itself. Drawn as a
+	// straight line it has zero length and vanishes, which reads as missing data
+	// rather than as the round trip it is.
+	SelfLoop bool
+	LoopX    float64
+	LoopY    float64
 }
 
 func (s *Server) ringAt(rank int) (detect.Candidate, float64, bool) {
@@ -263,6 +295,30 @@ func (s *Server) layout(c detect.Candidate) ([]nodeView, []edgeView) {
 	for a := range present {
 		accounts = append(accounts, a)
 	}
+
+	// A fan has a hub, and a hub drawn on the rim of a circle hides the very
+	// shape that makes it a fan. When one account touches most of the transfers,
+	// it goes in the middle and everything else arranges around it, which is how
+	// the structure is recognised by eye.
+	var hub int32 = -1
+	if len(txns) >= 4 {
+		touches := make(map[int32]int, len(present))
+		for _, t := range txns {
+			touches[t.From]++
+			if t.To != t.From {
+				touches[t.To]++
+			}
+		}
+		best, bestN := int32(-1), 0
+		for a, n := range touches {
+			if n > bestN {
+				best, bestN = a, n
+			}
+		}
+		if bestN*2 >= len(txns) {
+			hub = best
+		}
+	}
 	// Order by net flow so sources and sinks sit apart on the circle and the
 	// direction of movement is legible at a glance.
 	sort.Slice(accounts, func(i, j int) bool {
@@ -274,13 +330,32 @@ func (s *Server) layout(c detect.Candidate) ([]nodeView, []edgeView) {
 		return accounts[i] < accounts[j]
 	})
 
+	// Place the rim accounts, keeping the hub aside for the centre.
+	rim := accounts
+	if hub >= 0 {
+		rim = rim[:0]
+		for _, a := range accounts {
+			if a != hub {
+				rim = append(rim, a)
+			}
+		}
+	}
+
 	pos := make(map[int32][2]float64, len(accounts))
+	for i, a := range rim {
+		angle := 2 * math.Pi * float64(i) / float64(len(rim))
+		pos[a] = [2]float64{
+			cx + r*math.Cos(angle-math.Pi/2),
+			cy + r*math.Sin(angle-math.Pi/2),
+		}
+	}
+	if hub >= 0 {
+		pos[hub] = [2]float64{cx, cy}
+	}
+
 	nodes := make([]nodeView, 0, len(accounts))
-	for i, a := range accounts {
-		angle := 2 * math.Pi * float64(i) / float64(len(accounts))
-		x := cx + r*math.Cos(angle-math.Pi/2)
-		y := cy + r*math.Sin(angle-math.Pi/2)
-		pos[a] = [2]float64{x, y}
+	for _, a := range accounts {
+		x, y := pos[a][0], pos[a][1]
 
 		kind := "intermediary"
 		switch {
@@ -290,23 +365,35 @@ func (s *Server) layout(c detect.Candidate) ([]nodeView, []edgeView) {
 			kind = "sink"
 		}
 		label := s.ledger.Accounts[a]
-		if i := len(label); i > 9 {
+		if len(label) > 9 {
 			label = label[len(label)-9:]
 		}
 		nodes = append(nodes, nodeView{
 			ID: fmt.Sprint(a), Label: label, X: x, Y: y,
-			In: inflow[a], Out: outflow[a], Kind: kind,
+			In: inflow[a], Out: outflow[a], Kind: kind, Hub: a == hub,
 		})
 	}
 
 	edges := make([]edgeView, 0, len(txns))
 	for _, t := range txns {
 		p1, p2 := pos[t.From], pos[t.To]
-		edges = append(edges, edgeView{
+		e := edgeView{
 			X1: p1[0], Y1: p1[1], X2: p2[0], Y2: p2[1],
 			MidX: (p1[0] + p2[0]) / 2, MidY: (p1[1] + p2[1]) / 2,
 			Amount: t.Amount, Laundering: t.IsLaundering,
-		})
+		}
+		if t.From == t.To {
+			// Park a small circle just outside the node, away from the centre.
+			e.SelfLoop = true
+			dx, dy := p1[0]-cx, p1[1]-cy
+			norm := math.Hypot(dx, dy)
+			if norm == 0 {
+				norm = 1
+			}
+			e.LoopX = p1[0] + 15*dx/norm
+			e.LoopY = p1[1] + 15*dy/norm
+		}
+		edges = append(edges, e)
 	}
 	return nodes, edges
 }
@@ -338,15 +425,15 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, "dashboard.html", map[string]any{
-		"Title":      "Alert queue",
-		"Nav":        "queue",
-		"Rings":      rings,
-		"Total":      len(s.order),
-		"Ledger":     len(s.ledger.Txns),
-		"Decided":    decided,
-		"Headline":   headline,
-		"Report":     s.report,
-		"Chain":      tierNames(s.chain),
+		"Title":    "Alert queue",
+		"Nav":      "queue",
+		"Rings":    rings,
+		"Total":    len(s.order),
+		"Ledger":   len(s.ledger.Txns),
+		"Decided":  decided,
+		"Headline": headline,
+		"Report":   s.report,
+		"Chain":    tierNames(s.chain),
 	})
 }
 
@@ -362,14 +449,14 @@ func (s *Server) handleRing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, "ring.html", map[string]any{
-		"Title": fmt.Sprintf("Ring #%d", rank),
-		"Nav":   "queue",
-		"Ring":  v,
+		"Title":  fmt.Sprintf("Ring #%d", rank),
+		"Nav":    "queue",
+		"Ring":   v,
 		"Policy": s.chain.Policy,
-		"Chain": tierNames(s.chain),
-		"Prev":  rank - 1,
-		"Next":  rank + 1,
-		"Last":  len(s.order),
+		"Chain":  tierNames(s.chain),
+		"Prev":   rank - 1,
+		"Next":   rank + 1,
+		"Last":   len(s.order),
 	})
 }
 

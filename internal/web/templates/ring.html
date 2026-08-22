@@ -33,14 +33,21 @@
             </marker>
           </defs>
           {{range $r.Edges}}
+            {{if .SelfLoop}}
+            <circle cx="{{.LoopX}}" cy="{{.LoopY}}" r="9" fill="none"
+                    class="{{if .Laundering}}e-laundering{{else}}e-normal{{end}}"
+                    stroke-width="{{if .Laundering}}1.8{{else}}1{{end}}"
+                    opacity="{{if .Laundering}}0.95{{else}}0.5{{end}}"/>
+            {{else}}
             <line x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}"
                   class="{{if .Laundering}}e-laundering{{else}}e-normal{{end}}"
-                  stroke-width="{{if .Laundering}}1.6{{else}}1{{end}}"
+                  stroke-width="{{if .Laundering}}1.8{{else}}1{{end}}"
                   marker-end="url(#{{if .Laundering}}ahl{{else}}ah{{end}})"
-                  opacity="{{if .Laundering}}0.9{{else}}0.5{{end}}"/>
+                  opacity="{{if .Laundering}}0.95{{else}}0.5{{end}}"/>
+            {{end}}
           {{end}}
           {{range $r.Nodes}}
-            <circle cx="{{.X}}" cy="{{.Y}}" r="{{if $r.ShowLabels}}7{{else}}5.5{{end}}" class="n-{{.Kind}}"/>
+            <circle cx="{{.X}}" cy="{{.Y}}" r="{{if .Hub}}12{{else}}{{if $r.ShowLabels}}7{{else}}5.5{{end}}{{end}}" class="n-{{.Kind}}"/>
             {{if $r.ShowLabels}}
             <text x="{{.X}}" y="{{.Y}}" dy="-11" text-anchor="middle">{{.Label}}</text>
             {{end}}
