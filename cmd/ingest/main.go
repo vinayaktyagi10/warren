@@ -15,17 +15,15 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/vinayaktyagi10/warren/internal/csvutil"
 	"github.com/vinayaktyagi10/warren/internal/db"
 )
 
@@ -59,14 +57,6 @@ func main() {
 // ---------------------------------------------------------------------------
 // column layout
 // ---------------------------------------------------------------------------
-
-// Named transaction columns, in the order the transactions table expects them.
-var txnNamedCols = []string{
-	"TransactionID", "isFraud", "TransactionDT", "TransactionAmt", "ProductCD",
-	"card1", "card2", "card3", "card4", "card5", "card6",
-	"addr1", "addr2", "dist1", "dist2",
-	"P_emaildomain", "R_emaildomain",
-}
 
 // identityNumericIdx records which id_NN columns hold numbers rather than
 // labels. The split is interleaved rather than a clean prefix, and was derived
@@ -141,85 +131,12 @@ func (c *csvCursor) col(name string) string {
 
 func (c *csvCursor) close() error { return c.file.Close() }
 
-// ---------------------------------------------------------------------------
-// value parsing
-//
-// An empty field means "missing" and must reach Postgres as NULL rather than
-// as a zero, which the model would read as a real observation.
-// ---------------------------------------------------------------------------
-
-func nullText(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-func nullFloat32(s string) (*float32, error) {
-	if s == "" {
-		return nil, nil
-	}
-	v, err := strconv.ParseFloat(s, 32)
-	if err != nil {
-		return nil, err
-	}
-	f := float32(v)
-	return &f, nil
-}
-
-// nullInt16 parses codes that the CSV writes in float form ("404.0" for 404).
-func nullInt16(s string) (*int16, error) {
-	if s == "" {
-		return nil, nil
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return nil, err
-	}
-	i := int16(v)
-	return &i, nil
-}
-
-func nullInt32(s string) (*int32, error) {
-	if s == "" {
-		return nil, nil
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return nil, err
-	}
-	i := int32(v)
-	return &i, nil
-}
-
-// parseNumeric converts a decimal string to an exact NUMERIC. Going via float64
-// would let 75.887 land as 75.88699999999999; the fractional part of the amount
-// is a real fraud signal here, so it is carried as mantissa plus exponent.
-func parseNumeric(s string) (pgtype.Numeric, error) {
-	if s == "" {
-		return pgtype.Numeric{}, errors.New("empty amount")
-	}
-	neg := strings.HasPrefix(s, "-")
-	s = strings.TrimPrefix(s, "-")
-
-	intPart, fracPart, _ := strings.Cut(s, ".")
-	digits := intPart + fracPart
-	mant, ok := new(big.Int).SetString(digits, 10)
-	if !ok {
-		return pgtype.Numeric{}, fmt.Errorf("bad numeric %q", s)
-	}
-	if neg {
-		mant.Neg(mant)
-	}
-	return pgtype.Numeric{Int: mant, Exp: int32(-len(fracPart)), Valid: true}, nil
-}
-
 // floatArray reads a contiguous block of numeric columns (C1..C14 style) into a
 // slice that preserves NULL elements.
 func floatArray(c *csvCursor, prefix string, n int) ([]*float32, error) {
 	out := make([]*float32, n)
 	for i := 1; i <= n; i++ {
-		v, err := nullFloat32(c.col(fmt.Sprintf("%s%d", prefix, i)))
+		v, err := csvutil.NullFloat32(c.col(fmt.Sprintf("%s%d", prefix, i)))
 		if err != nil {
 			return nil, fmt.Errorf("%s%d: %w", prefix, i, err)
 		}
@@ -231,7 +148,7 @@ func floatArray(c *csvCursor, prefix string, n int) ([]*float32, error) {
 func textArray(c *csvCursor, prefix string, n int) []*string {
 	out := make([]*string, n)
 	for i := 1; i <= n; i++ {
-		out[i-1] = nullText(c.col(fmt.Sprintf("%s%d", prefix, i)))
+		out[i-1] = csvutil.NullText(c.col(fmt.Sprintf("%s%d", prefix, i)))
 	}
 	return out
 }
@@ -263,37 +180,37 @@ func (s *txnSource) Err() error { return s.err }
 func (s *txnSource) Values() ([]any, error) {
 	c := s.cur
 
-	txnID, err := nullInt32(c.col("TransactionID"))
+	txnID, err := csvutil.NullInt32(c.col("TransactionID"))
 	if err != nil {
 		return nil, fmt.Errorf("TransactionID: %w", err)
 	}
-	dt, err := nullInt32(c.col("TransactionDT"))
+	dt, err := csvutil.NullInt32(c.col("TransactionDT"))
 	if err != nil {
 		return nil, fmt.Errorf("TransactionDT: %w", err)
 	}
-	amt, err := parseNumeric(c.col("TransactionAmt"))
+	amt, err := csvutil.ParseNumeric(c.col("TransactionAmt"))
 	if err != nil {
 		return nil, fmt.Errorf("TransactionAmt: %w", err)
 	}
-	card1, err := nullInt32(c.col("card1"))
+	card1, err := csvutil.NullInt32(c.col("card1"))
 	if err != nil {
 		return nil, fmt.Errorf("card1: %w", err)
 	}
 
 	smallInts := make([]*int16, 0, 5)
 	for _, name := range []string{"card2", "card3", "card5", "addr1", "addr2"} {
-		v, err := nullInt16(c.col(name))
+		v, err := csvutil.NullInt16(c.col(name))
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		smallInts = append(smallInts, v)
 	}
 
-	dist1, err := nullFloat32(c.col("dist1"))
+	dist1, err := csvutil.NullFloat32(c.col("dist1"))
 	if err != nil {
 		return nil, fmt.Errorf("dist1: %w", err)
 	}
-	dist2, err := nullFloat32(c.col("dist2"))
+	dist2, err := csvutil.NullFloat32(c.col("dist2"))
 	if err != nil {
 		return nil, fmt.Errorf("dist2: %w", err)
 	}
@@ -316,19 +233,19 @@ func (s *txnSource) Values() ([]any, error) {
 		c.col("isFraud") == "1",
 		dt,
 		amt,
-		nullText(c.col("ProductCD")),
+		csvutil.NullText(c.col("ProductCD")),
 		card1,
 		smallInts[0], // card2
 		smallInts[1], // card3
-		nullText(c.col("card4")),
+		csvutil.NullText(c.col("card4")),
 		smallInts[2], // card5
-		nullText(c.col("card6")),
+		csvutil.NullText(c.col("card6")),
 		smallInts[3], // addr1
 		smallInts[4], // addr2
 		dist1,
 		dist2,
-		nullText(c.col("P_emaildomain")),
-		nullText(c.col("R_emaildomain")),
+		csvutil.NullText(c.col("P_emaildomain")),
+		csvutil.NullText(c.col("R_emaildomain")),
 		cCounts,
 		dDeltas,
 		textArray(c, "M", 9),
@@ -384,7 +301,7 @@ func (s *identSource) Err() error { return s.err }
 func (s *identSource) Values() ([]any, error) {
 	c := s.cur
 
-	txnID, err := nullInt32(c.col("TransactionID"))
+	txnID, err := csvutil.NullInt32(c.col("TransactionID"))
 	if err != nil {
 		return nil, fmt.Errorf("TransactionID: %w", err)
 	}
@@ -395,16 +312,16 @@ func (s *identSource) Values() ([]any, error) {
 		name := fmt.Sprintf("id_%02d", i)
 		raw := c.col(name)
 		if identityNumericIdx[i] {
-			v, err := nullFloat32(raw)
+			v, err := csvutil.NullFloat32(raw)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", name, err)
 			}
 			vals = append(vals, v)
 		} else {
-			vals = append(vals, nullText(raw))
+			vals = append(vals, csvutil.NullText(raw))
 		}
 	}
-	vals = append(vals, nullText(c.col("DeviceType")), nullText(c.col("DeviceInfo")))
+	vals = append(vals, csvutil.NullText(c.col("DeviceType")), csvutil.NullText(c.col("DeviceInfo")))
 	return vals, nil
 }
 
