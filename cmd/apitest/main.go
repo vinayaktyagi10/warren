@@ -29,17 +29,48 @@ import (
 )
 
 func main() {
-	model := flag.String("model", "claude-opus-5", "model to call")
-	envFile := flag.String("env", ".env", "file to read ANTHROPIC_API_KEY from")
+	provider := flag.String("provider", "gemini", "which backend to check: gemini or claude")
+	model := flag.String("model", "", "model to call; empty uses the provider default")
+	envFile := flag.String("env", ".env", "file to read the API key from")
+	list := flag.Bool("list", false, "list the models the key can reach (gemini only)")
 	flag.Parse()
 
 	if err := config.LoadDotEnv(*envFile); err != nil {
 		log.Fatalf("read %s: %v", *envFile, err)
 	}
 
+	switch *provider {
+	case "gemini":
+		if *list {
+			if err := listGemini(); err != nil {
+				log.Fatalf("%v", err)
+			}
+			return
+		}
+		m := *model
+		if m == "" {
+			m = "gemini-flash-latest"
+		}
+		if err := testGemini(m); err != nil {
+			os.Exit(1)
+		}
+		return
+	case "claude":
+		m := *model
+		if m == "" {
+			m = "claude-opus-5"
+		}
+		testClaude(m)
+		return
+	default:
+		log.Fatalf("unknown provider %q; use gemini or claude", *provider)
+	}
+}
+
+func testClaude(model string) {
 	key := os.Getenv("ANTHROPIC_API_KEY")
 	if key == "" {
-		log.Fatalf("ANTHROPIC_API_KEY is not set (looked in the environment and %s)", *envFile)
+		log.Fatalf("ANTHROPIC_API_KEY is not set (looked in the environment and the env file)")
 	}
 	// Never print the key. The prefix and length are enough to tell a truncated
 	// paste from a wrong-account key.
@@ -50,11 +81,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	fmt.Printf("calling %s…\n\n", *model)
+	fmt.Printf("calling %s…\n\n", model)
 	start := time.Now()
 
 	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(*model),
+		Model:     anthropic.Model(model),
 		MaxTokens: 64,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(
