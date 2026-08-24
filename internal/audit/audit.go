@@ -88,6 +88,15 @@ func (l *Log) Record(ctx context.Context, ev agent.Evidence, a agent.Assessment)
 	return seq, h, nil
 }
 
+// Count reports how many decisions the log holds. Callers use it to tell an
+// empty log from one that already has history, which is not the same question
+// as whether the log verifies.
+func (l *Log) Count(ctx context.Context) (int64, error) {
+	var n int64
+	err := l.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log`).Scan(&n)
+	return n, err
+}
+
 // entryHash commits to the decision's content, its position, and its
 // predecessor.
 func entryHash(seq int64, prevHash string, a agent.Assessment, evidenceJSON []byte) string {

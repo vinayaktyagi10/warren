@@ -30,6 +30,36 @@
     </div>
   </div>
 
+  <div class="card mb">
+    <div class="row" style="margin-bottom:14px">
+      <h2 style="margin:0">What this queue costs to work</h2>
+      <div class="spacer"></div>
+      <a href="/metrics" class="small">full performance breakdown →</a>
+    </div>
+    <div class="budget-strip">
+      {{range .Budgets}}
+      <div class="budget{{if eq .TopK 50}} budget-on{{end}}">
+        <div class="budget-k">{{num .TopK}} <span class="budget-k-unit">alerts</span></div>
+        <dl>
+          <dt>Rings found</dt>
+          <dd class="v-pink">{{.RingsFound}}<span class="faint">/{{.TotalRings}}</span></dd>
+          <dt>Precision</dt>
+          <dd class="v-green">{{pct3 .Precision}}</dd>
+          <dt>Recall</dt>
+          <dd class="v-yellow">{{pct3 .Recall}}</dd>
+          <dt>Legit value held</dt>
+          <dd class="v-orange">{{money .FPValue}}</dd>
+        </dl>
+      </div>
+      {{end}}
+    </div>
+    <div class="section-note">
+      Working further down the queue finds more rings and holds more innocent money; there
+      is no budget at which both improve. The queue below is drawn at the leftmost setting,
+      which is the one a small team could actually staff.
+    </div>
+  </div>
+
   <div class="card card-accent mb">
     <div class="row">
       <div>

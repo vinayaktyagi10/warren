@@ -29,6 +29,8 @@ func main() {
 	offline := flag.Bool("offline", false,
 		"run with no model at all, deciding on the deterministic fallback")
 	trainFraction := flag.Float64("train-fraction", 0.7, "share of the active period used to fit the ranker")
+	seed := flag.Int("seed-decisions", 4,
+		"decide this many top alerts at startup when the audit log is empty; 0 disables")
 	envFile := flag.String("env", ".env", "file to read GEMINI_API_KEY from")
 	flag.Parse()
 
@@ -54,6 +56,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("prepare: %v", err)
 	}
+	srv.SeedAudit(ctx, *seed)
 
 	httpSrv := &http.Server{
 		Addr:              *addr,

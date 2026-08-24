@@ -403,7 +403,10 @@ func (s *Server) layout(c detect.Candidate) ([]nodeView, []edgeView) {
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	limit := 40
+	// 50 rows, because 50 is the alert budget the strip above headlines and the
+	// one the measured precision figure is quoted at. A queue showing a different
+	// number of alerts than the number being claimed invites the obvious question.
+	limit := 50
 	rings := make([]*ringView, 0, limit)
 	for rank := 1; rank <= limit && rank <= len(s.order); rank++ {
 		if v, ok := s.buildRingView(rank, false); ok {
@@ -432,6 +435,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"Ledger":   len(s.ledger.Txns),
 		"Decided":  decided,
 		"Headline": headline,
+		"Budgets":  s.budgetPoints(50, 250, 1000),
 		"Report":   s.report,
 		"Chain":    tierNames(s.chain),
 	})
@@ -468,18 +472,10 @@ func (s *Server) handleAssess(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad rank", http.StatusBadRequest)
 		return
 	}
-	c, sc, ok := s.ringAt(rank)
+	ev, ok := s.evidenceFor(rank)
 	if !ok {
 		http.NotFound(w, r)
 		return
-	}
-
-	ev := agent.Evidence{
-		RingID: rank, Typology: c.Typology,
-		Accounts: c.Features.Accounts, Txns: c.Features.Txns,
-		TotalAmount: c.Features.TotalAmount, MaxAmount: c.Features.MaxAmount,
-		Conservation: c.Features.Conservation, PassThrough: c.Features.PassThroughRatio,
-		SpanHours: c.Features.SpanHours, Score: sc, WindowStart: c.Window,
 	}
 
 	start := time.Now()
@@ -507,6 +503,78 @@ func (s *Server) handleAssess(w http.ResponseWriter, r *http.Request) {
 		"auditHash":   hash,
 		"took":        time.Since(start).Round(time.Millisecond).String(),
 	})
+}
+
+// evidenceFor assembles the bundle the assessor is given for one ranked group.
+//
+// Only measured quantities go in. There is deliberately no name, memo or
+// reference field: if free text from the ledger reached the model, a party under
+// investigation would have a channel to address the system judging them.
+func (s *Server) evidenceFor(rank int) (agent.Evidence, bool) {
+	c, sc, ok := s.ringAt(rank)
+	if !ok {
+		return agent.Evidence{}, false
+	}
+	return agent.Evidence{
+		RingID: rank, Typology: c.Typology,
+		Accounts: c.Features.Accounts, Txns: c.Features.Txns,
+		TotalAmount: c.Features.TotalAmount, MaxAmount: c.Features.MaxAmount,
+		Conservation: c.Features.Conservation, PassThrough: c.Features.PassThroughRatio,
+		SpanHours: c.Features.SpanHours, Score: sc, WindowStart: c.Window,
+	}, true
+}
+
+// SeedAudit decides the first few alerts at startup so the trail is never empty.
+//
+// An audit page with nothing on it argues against the thing it exists to prove:
+// the claim is that every decision leaves a record, and an empty table reads as
+// no decisions being recorded rather than as none having been made yet. These
+// are real decisions through the real chain, not fixtures — they cost a model
+// call each and they can degrade, which is exactly what should be visible.
+//
+// It seeds only an empty log, so a demo that has already run is never
+// overwritten, and it skips the ring the console opens on: assessing that one
+// live, in front of an audience, is the point of the front page.
+func (s *Server) SeedAudit(ctx context.Context, n int) {
+	if n <= 0 {
+		return
+	}
+	have, err := s.log.Count(ctx)
+	if err != nil {
+		log.Printf("seed: cannot read audit log: %v", err)
+		return
+	}
+	if have > 0 {
+		log.Printf("seed: audit log already holds %d decisions, leaving it alone", have)
+		return
+	}
+
+	skip := 0
+	if s.heroPattern != 0 {
+		skip, _ = s.findCovering(s.heroTxns)
+	}
+
+	start := time.Now()
+	seeded := 0
+	for rank := 1; rank <= len(s.order) && seeded < n; rank++ {
+		if rank == skip {
+			continue
+		}
+		ev, ok := s.evidenceFor(rank)
+		if !ok {
+			continue
+		}
+		a := s.chain.Assess(ctx, ev)
+		if _, _, err := s.log.Record(ctx, ev, a); err != nil {
+			log.Printf("seed: record ring %d: %v", rank, err)
+			return
+		}
+		s.mu.Lock()
+		s.decided[rank] = a
+		s.mu.Unlock()
+		seeded++
+	}
+	log.Printf("seed: %d decisions recorded in %s", seeded, time.Since(start).Round(time.Millisecond))
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
@@ -574,12 +642,26 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(shapes, func(i, j int) bool { return shapes[i].Rate > shapes[j].Rate })
 
-	type budgetRow struct {
-		detect.RankedRow
-		Precision float64
-		Recall    float64
-	}
-	var budgets []budgetRow
+	s.render(w, "metrics.html", map[string]any{
+		"Title":   "Measured performance",
+		"Nav":     "metrics",
+		"Shapes":  shapes,
+		"Budgets": s.budgetRows(),
+		"Report":  s.report,
+		"Weights": s.modelWeights(),
+	})
+}
+
+// budgetRow is one point on the alert-budget curve: what a team gets, and what
+// it costs them, if they agree to work exactly this many alerts.
+type budgetRow struct {
+	detect.RankedRow
+	Precision float64
+	Recall    float64
+}
+
+func (s *Server) budgetRows() []budgetRow {
+	rows := make([]budgetRow, 0, len(s.ranked.Rows))
 	for _, row := range s.ranked.Rows {
 		p, rc := 0.0, 0.0
 		if row.TxnTP+row.TxnFP > 0 {
@@ -588,17 +670,24 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		if row.TxnTP+row.TxnFN > 0 {
 			rc = float64(row.TxnTP) / float64(row.TxnTP+row.TxnFN)
 		}
-		budgets = append(budgets, budgetRow{row, p, rc})
+		rows = append(rows, budgetRow{row, p, rc})
 	}
+	return rows
+}
 
-	s.render(w, "metrics.html", map[string]any{
-		"Title":   "Measured performance",
-		"Nav":     "metrics",
-		"Shapes":  shapes,
-		"Budgets": budgets,
-		"Report":  s.report,
-		"Weights": s.modelWeights(),
-	})
+// budgetPoints picks a few budgets to show inline, in the order asked for.
+func (s *Server) budgetPoints(want ...int) []budgetRow {
+	byK := make(map[int]budgetRow, len(s.ranked.Rows))
+	for _, r := range s.budgetRows() {
+		byK[r.TopK] = r
+	}
+	out := make([]budgetRow, 0, len(want))
+	for _, k := range want {
+		if r, ok := byK[k]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 type weightRow struct {
