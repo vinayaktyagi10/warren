@@ -392,3 +392,105 @@ loss at all: finding 11 measures 95% of laundering transfers sitting inside
 the ordinary amount range for their channel. The latency is the price of
 looking at the ring instead of the payment, and it is stated rather than
 hidden behind the one sub-microsecond number that flatters.
+
+---
+
+# 13. The action layer, and the ceiling that limits it
+
+WARREN's decisions were, until now, opinions: a ring, an explanation, an action,
+recorded tamper-evidently, and nothing moved. `internal/enforce` closes that —
+a policy-approved block leases a freeze over the ring's accounts, later transfers
+out of a frozen account are stopped, every lease expires, and every lease can be
+lifted early.
+
+Then it was measured, and the measurement is not flattering.
+
+**Note on the split.** Everything below uses a 50/50 temporal split, not the 70/30
+used for the published precision and recall. At 70/30 the held-out period is 3
+days and the detection window is 72 hours, so **every alert closes after the data
+ends and the enforcement runway is exactly zero**. That is itself the first
+finding: the runway is `held-out span − window width`, and it is easy to ship a
+silent zero that reads as "enforcement caught nothing" when the truth is
+"enforcement was never given a chance". `ReplayResult.Runway` now says so in
+capitals rather than reporting zeros.
+
+## The ceiling: 89% of a ring's money is gone before anyone can see the ring
+
+Before asking how well the action layer performs, ask what performance is
+available. `MeasureCeiling` runs an oracle: it is told which transfers belong to
+which labelled ring, and it acts at the first window closure at or after the
+ring's third transfer — the earliest instant any windowed detector could have
+raised a candidate. Perfect precision, perfect recall, no model. Whatever it
+cannot stop, nothing can.
+
+| window | stride | stoppable transfers | stoppable value | share of ring value |
+|---:|---:|---:|---:|---:|
+| 72h | 24h | 331 | 571m | **10.76%** |
+| 48h | 24h | 515 | 1.62bn | 30.42% |
+| 24h | 24h | 627 | 1.69bn | 31.75% |
+| 12h | 12h | 782 | 1.99bn | 37.45% |
+| 6h | 6h | 826 | 2.09bn | 39.25% |
+
+**At the geometry WARREN actually ships — 72h windows — a perfect detector could
+stop at most 10.76% of ring value.** Nearly nine tenths of the money has already
+moved by the time a 72-hour window can close over enough of the ring to raise it.
+The window width was chosen for detection recall, and finding 10 already showed it
+buys recall; this shows what it costs. Halving it to 48h triples the ceiling.
+
+This is the direct consequence of finding 12: window width *is* decision latency,
+and decision latency *is* the enforcement ceiling. The three numbers are one
+number.
+
+## The measured result: under 1% of laundering value, at every geometry tried
+
+Held-out replay, alert budget 250, deterministic decider so the figure does not
+move with a provider's availability:
+
+| window/stride | detection recall @250 | runway | rings hit | laundering value stopped | share of stopped value that was laundering | share of the ceiling reached |
+|---|---:|---:|---:|---:|---:|---:|
+| 72h / 24h | 34.7% | 48h | 7 | 122k | 0.96% | 0.02% |
+| 48h / 12h | 32.0% | 72h | 18 | 3.04m | **7.88%** | 0.18% |
+| **24h / 6h** | 13.5% | 96h | **30** | **12.28m** | 3.81% | **0.66%** |
+| 12h / 3h | 7.7% | 108h | 21 | 3.01m | 3.15% | 0.14% |
+
+Read it honestly. **The best geometry tried intercepts 0.47% of the laundering
+value moving in the period, and reaches 0.66% of what a perfect detector at that
+same geometry could have reached.** The action layer works mechanically — leases
+are imposed, transfers are stopped, nothing is permanent — and it recovers almost
+nothing.
+
+Two independent gaps, and they need separate answers:
+
+1. **The ceiling is low** (10.76% at the shipped geometry). Architectural. No
+   detector fixes it; only a narrower window does, and that costs recall.
+2. **We reach under 1% of the ceiling.** Not architectural. The oracle knows the
+   ring's true membership and freezes at the earliest instant; WARREN freezes only
+   accounts inside candidates that were detected, scored ≥0.90 to earn a block,
+   and held ≤25 accounts.
+
+The value asymmetry says where gap 2 lives. At 24h/6h the oracle stops ~627
+transfers averaging ~3m; WARREN stops 43 averaging 286k. **The oracle is catching
+the large transfers and WARREN is catching small ones**, which points at the
+rings WARREN misses rather than at the leases themselves.
+
+## What the sweep argues for
+
+Detection recall falls from 34.7% to 13.5% between 72h and 24h windows, while
+rings intercepted rises from 7 to 30 and value stopped rises 100×. Those are not
+the same objective and the sweep says plainly that **one window geometry cannot
+serve both**: a wide window sees the ring's shape, a narrow one still has
+something to freeze.
+
+The design that follows is two geometries, not a compromise between them — a 72h
+pass for investigation and recall, feeding the queue an analyst works, and a
+short pass for enforcement, whose only job is to still have a lease worth
+imposing. That is a real architectural change and it is not made here; it is
+recorded as what the measurement argues for.
+
+## What this measurement is not
+
+It is interception against the recorded ledger, not a counterfactual. A stopped
+transfer is not removed from what later windows detect, and an operator whose
+accounts are frozen does not adapt. Both would move the number and neither can be
+simulated honestly from a fixed file, so the figure is what the leases would have
+sat in front of, not what the ring would ultimately have failed to move.

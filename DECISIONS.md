@@ -196,3 +196,71 @@ the number looks right. Report only the raw figure — rejected, it is a
 measurement of the harness presented as a measurement of the system.
 **My answer before seeing yours:** n/a — caught during verification, after the
 approach was agreed.
+
+## 2026-08-27 — Only a policy-approved block may stop money
+**Chose:** in `internal/enforce`, a block leases a `frozen` restriction over the
+ring's accounts and stops later transfers out of them; a `hold_for_review` leases
+a `watch`, which is recorded and expires and stops nothing; `allow` leases
+nothing.
+**Why:** it means the gates the agent policy already applies to blocking — ranker
+score ≥0.90, stated confidence ≥0.80, total under the 10M ceiling — are the only
+gates on enforcement, and there is no second, looser path to freezing an account.
+Making `hold` freeze money too would have created exactly that path, and would
+have put the false-positive cost of the whole review queue onto people's
+accounts rather than onto an analyst's time.
+**Alternative considered:** hold imposes a short freeze pending review, which is
+what some real systems do — rejected here because the review queue runs at 6–13%
+precision, so it would be holding roughly nine innocent groups per real one, with
+no human between the model and the money.
+**My answer before seeing yours:** chose "restriction ledger" from three options
+when asked; the tier split within it was mine.
+
+## 2026-08-27 — Measure the interception ceiling before judging the result
+**Chose:** an oracle detector — told the true ring membership, acting at the first
+window closure at or after the ring's third transfer — computed per window
+geometry, and the replay result reported as a share of it.
+**Why:** a bad enforcement number has two causes needing opposite responses. If
+stoppable money is being left on the table, build a better detector. If almost
+none of a ring's money is still in flight when any windowed detector could first
+see it, no detector helps and the architecture is what must change. Guessing is
+how a week goes into the wrong thing. Measured: at the shipped 72h geometry the
+ceiling is **10.76%** — a perfect detector could stop at most a tenth of ring
+value — and it triples at 48h. The window width chosen for recall in finding 10
+costs two thirds of the achievable enforcement value.
+**Alternative considered:** report interception against all laundering value in
+the period — rejected, it conflates the layer being weak with the layer being
+given no runway, and it has no upper bound to be read against.
+**My answer before seeing yours:** n/a — the ceiling was built after the first
+replay returned near-zero and the cause was genuinely ambiguous.
+
+## 2026-08-27 — Replay with a deterministic decider, not the model
+**Chose:** `enforce.ThresholdDecider` proposes block/hold/allow straight off the
+ranker score and hands the proposal to the real `agent.Policy`; the replay uses
+it by default rather than calling Gemini.
+**Why:** the published enforcement figure should not move because a provider
+returned 503, and 250 alerts per geometry across four geometries is a thousand
+model calls per sweep. What is being measured is what a block *does* — which
+rings get blocked is the model's job, and swapping the decider changes the
+former, not the latter.
+**Alternative considered:** run the real chain — kept available and worth doing
+once for the write-up, but not as the default, because a headline number that is
+not reproducible is not a measurement.
+**Risk accepted:** `ThresholdDecider` can block without a model, which
+`RuleAssessor` deliberately refuses to do on a degraded path. It is named and
+documented as a measurement stand-in and must never be added to the chain.
+**My answer before seeing yours:** n/a — follow-through on an agreed measurement.
+
+## 2026-08-27 — One geometry cannot serve both investigation and enforcement
+**Chose:** record, but do not yet implement, that the sweep argues for two
+detection passes rather than one compromise width.
+**Why:** between 72h and 24h windows, detection recall at 250 alerts falls 34.7%
+→ 13.5% while rings intercepted rises 7 → 30 and laundering value stopped rises
+100×. A wide window sees the ring's shape; a narrow one still has something left
+to freeze. Those are different objectives and the measurement says a single width
+trades one against the other rather than serving both.
+**Alternative considered:** pick the middle at 48h/12h, which has the best action
+precision (7.88%) — rejected as a default because it is worse than 24h at the
+thing enforcement exists to do and worse than 72h at the thing the queue exists
+to do.
+**My answer before seeing yours:** n/a — a conclusion from the sweep, not yet a
+build. Flagged for a decision rather than made unilaterally.
