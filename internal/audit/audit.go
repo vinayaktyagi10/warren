@@ -64,6 +64,16 @@ func (l *Log) Record(ctx context.Context, ev agent.Evidence, a agent.Assessment)
 		return 0, "", fmt.Errorf("read previous hash: %w", err)
 	}
 
+	// A decision with nothing to adjust has a nil slice, which reaches Postgres
+	// as NULL and fails the NOT NULL column. It shows up only on the path where
+	// nothing intervened — the deterministic rule with no degradation and no
+	// policy override — which is exactly the path least likely to be exercised
+	// while a provider is reachable, and so the one that stayed broken longest.
+	adjustments := a.Adjustments
+	if adjustments == nil {
+		adjustments = []string{}
+	}
+
 	var seq int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO audit_log (decided_at, ring_id, action, proposed, confidence,
@@ -71,7 +81,7 @@ func (l *Log) Record(ctx context.Context, ev agent.Evidence, a agent.Assessment)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'')
 		RETURNING seq`,
 		a.DecidedAt, a.RingID, string(a.Action), string(a.Proposed), a.Confidence,
-		a.Source, a.Rationale, a.Adjustments, evidenceJSON, prevHash).Scan(&seq)
+		a.Source, a.Rationale, adjustments, evidenceJSON, prevHash).Scan(&seq)
 	if err != nil {
 		return 0, "", fmt.Errorf("insert: %w", err)
 	}

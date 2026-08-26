@@ -1,0 +1,155 @@
+{{define "holds.html"}}{{template "head" .}}
+<div class="wrap wrap-wide">
+
+  <h1>Holds in force</h1>
+  <p class="subtitle">
+    Every account whose money this system is currently sitting on, how long for, and
+    the decision that authorised it. A hold whose authority cannot be named is one
+    WARREN will not place: the lease is written only after the decision is in the
+    audit chain, so if the record fails, nothing is held.
+  </p>
+
+  <div class="grid grid-4 mb">
+    <div class="stat">
+      <div class="stat-label">Frozen</div>
+      <div class="stat-value v-pink">{{.Frozen}}</div>
+      <div class="stat-note">transfers out are stopped</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Watched</div>
+      <div class="stat-value v-yellow">{{.Watching}}</div>
+      <div class="stat-note">recorded, stops nothing</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Longest a freeze may run</div>
+      <div class="stat-value">{{.Limits.FrozenFor}}</div>
+      <div class="stat-note">then it lapses on its own</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Ledger entries</div>
+      <div class="stat-value v-lav">{{.Events}}</div>
+      <div class="stat-note">hash-chained, append only</div>
+    </div>
+  </div>
+
+  {{if gt .Orphaned 0}}
+  <div class="card mb" style="border-color:#fd6883">
+    <h2 class="v-pink">{{.Orphaned}} holds rest on an authority that no longer verifies</h2>
+    <p class="small">
+      The decision log has been altered at or before the entry that authorised these
+      holds. The hashes catching that is the point of the chain; this is what it means
+      in the world — money is being held on a record that no longer checks out. Either
+      the decisions are restored, or these holds should be lifted.
+    </p>
+  </div>
+  {{end}}
+
+  {{if and .Why.Any (eq .Frozen 0)}}
+  <div class="card mb">
+    <h2>Nothing is frozen, and that is the envelope working</h2>
+    <p class="small">
+      {{.Why.Decisions}} decisions are on record. <b>{{.Why.ProposedBlock}}</b> of them
+      asked to block.
+      {{if gt .Why.OnCeiling 0}}
+        <b>{{.Why.OnCeiling}}</b> were refused on the value ceiling — the ring moved more
+        money than the policy lets the system stop on its own authority, so a person
+        decides however certain the machine was.
+      {{end}}
+      {{if gt .Why.OnDegraded 0}}
+        <b>{{.Why.OnDegraded}}</b> were decided by the deterministic fallback, which will
+        hold but never block: an autonomous freeze on a degraded path is exactly the
+        decision that should wait for a person.
+      {{end}}
+    </p>
+    <p class="small muted">
+      Every high-scoring ring in this ledger moves far more than the autonomous ceiling,
+      so on this queue the freeze path is unreachable by design rather than unbuilt. The
+      watches below are what the system did instead: recorded, visible, expiring, and
+      touching nobody's money.
+    </p>
+  </div>
+  {{end}}
+
+  <div class="card">
+    <div class="row-between">
+      <h2>Accounts held</h2>
+      <div>
+        <button class="btn" onclick="verifyHolds()">Verify the hold ledger</button>
+      </div>
+    </div>
+    <div id="holdverify" class="section-note"></div>
+
+    {{if not .Holds}}
+      <p class="muted">
+        Nothing is held. Holds appear here when a ring is assessed and the decision
+        survives every policy gate on blocking — score at or above 0.90, stated
+        confidence at or above 0.80, and a total under the autonomous ceiling.
+      </p>
+    {{else}}
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Tier</th>
+          <th class="num">Ring</th>
+          <th>Raised by</th>
+          <th class="num">Expires in</th>
+          <th class="num">Authority</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Holds}}
+        <tr {{if .Orphaned}}style="background:rgba(253,104,131,.08)"{{end}}>
+          <td class="mono small">{{.Account}}</td>
+          <td><span class="shape {{if eq .Tier "frozen"}}v-pink{{else}}v-yellow{{end}}">{{.Tier}}</span></td>
+          <td class="num mono">{{.RingID}}</td>
+          <td class="mono small muted">{{if .Pass}}{{.Pass}}{{else}}—{{end}}</td>
+          <td class="num mono {{if .Expired}}muted{{end}}">{{.Remaining}}</td>
+          <td class="num mono">
+            {{if .HasDecision}}
+              <a href="/audit#seq-{{.DecisionSeq}}">#{{.DecisionSeq}}</a>
+              {{if .Orphaned}}<span class="v-pink"> broken</span>{{end}}
+            {{else}}<span class="muted">operator</span>{{end}}
+          </td>
+          <td class="num">
+            {{if eq .Tier "frozen"}}
+            <button class="btn btn-small" onclick="lift('{{.Account}}')">Lift</button>
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{end}}
+
+    <div class="section-note">
+      Lifting is a first-class operation, not an administrative correction: a bounded
+      action that cannot be undone before it expires is not bounded, it is just slow.
+      A lift is appended to the ledger rather than deleting the hold, because "this
+      account was frozen and then released" is the sentence an audit needs, and a table
+      of current state cannot say it. Lifts carry no decision number — a release
+      performed by a person is authorised by that person, and attributing it to a
+      machine's decision would be a lie about who decided.
+    </div>
+  </div>
+
+</div>
+<script>
+async function lift(account) {
+  const body = new URLSearchParams({account});
+  const r = await fetch('/api/holds/lift', {method:'POST', body});
+  if (r.ok) location.reload();
+}
+async function verifyHolds() {
+  const r = await fetch('/api/holds/verify', {method:'POST'});
+  const d = await r.json();
+  const el = document.getElementById('holdverify');
+  el.innerHTML = d.valid
+    ? '<span class="v-green">Ledger intact.</span> ' + d.events + ' entries, every hash chains onto the one before it.'
+    : '<span class="v-pink">Ledger broken at entry ' + d.seq + '.</span> ' + d.reason;
+}
+</script>
+{{template "foot" .}}{{end}}

@@ -18,6 +18,7 @@ import (
 	"github.com/vinayaktyagi10/warren/internal/config"
 	"github.com/vinayaktyagi10/warren/internal/db"
 	"github.com/vinayaktyagi10/warren/internal/detect"
+	"github.com/vinayaktyagi10/warren/internal/enforce"
 	"github.com/vinayaktyagi10/warren/internal/web"
 )
 
@@ -31,6 +32,11 @@ func main() {
 	trainFraction := flag.Float64("train-fraction", 0.7, "share of the active period used to fit the ranker")
 	seed := flag.Int("seed-decisions", 4,
 		"decide this many top alerts at startup when the audit log is empty; 0 disables")
+	blockCeiling := flag.Float64("block-ceiling", agent.DefaultPolicy().BlockMaxAmount,
+		"largest total a ring may move and still be blocked without a person; every\n"+
+			"high-scoring ring in the IBM AML ledger moves far more than the real-world\n"+
+			"default, so raising this is the only way to exercise the autonomous freeze\n"+
+			"path on this data at all")
 	envFile := flag.String("env", ".env", "file to read GEMINI_API_KEY from")
 	flag.Parse()
 
@@ -50,9 +56,14 @@ func main() {
 		log.Fatalf("audit: %v", err)
 	}
 
-	chain := buildChain(ctx, *model, *fallbackModel, *offline)
+	holds, err := enforce.NewStore(ctx, pool)
+	if err != nil {
+		log.Fatalf("restrictions: %v", err)
+	}
 
-	srv, err := web.New(ctx, pool, detect.DefaultConfig(), chain, auditLog, *trainFraction)
+	chain := buildChain(ctx, *model, *fallbackModel, *offline, *blockCeiling)
+
+	srv, err := web.New(ctx, pool, detect.DefaultConfig(), chain, auditLog, holds, *trainFraction)
 	if err != nil {
 		log.Fatalf("prepare: %v", err)
 	}
@@ -73,8 +84,13 @@ func main() {
 	}
 }
 
-func buildChain(ctx context.Context, model, fallbackModel string, offline bool) *agent.Chain {
+func buildChain(ctx context.Context, model, fallbackModel string, offline bool, blockCeiling float64) *agent.Chain {
 	policy := agent.DefaultPolicy()
+	if blockCeiling > 0 && blockCeiling != policy.BlockMaxAmount {
+		log.Printf("autonomous block ceiling raised from %.0f to %.0f; this is a demonstration "+
+			"setting, not a recommendation", policy.BlockMaxAmount, blockCeiling)
+		policy.BlockMaxAmount = blockCeiling
+	}
 	if offline {
 		log.Printf("offline: deciding on the deterministic fallback only")
 		return agent.NewChain(policy)

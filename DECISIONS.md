@@ -314,3 +314,55 @@ turned out to be an accounting artefact.
 **Alternative considered:** report per-pass budgets and let the reader adjust —
 rejected, nobody does, and the headline would have been wrong.
 **My answer before seeing yours:** n/a — caught during verification.
+
+## 2026-08-27 — Two hash chains, cross-referenced, rather than one
+**Chose:** restrictions get their own append-only hash-chained table,
+`account_restrictions`, with every lease and lift naming the `audit_log` entry
+that authorised it.
+**Why:** `audit_log` records what the system decided; this records what it did
+about it. Folding both into one table meant either leaving the record type
+outside the hash, which makes it forgeable, or bringing it inside and
+invalidating the hash of every decision already written. Two chains keep both
+properties and lose nothing, because the join is what carries the meaning: a
+lease whose `decision_seq` points at a broken audit entry is money being held on
+an authority that no longer verifies. Verified working — tampering with decision
+4 now reports the eight accounts still frozen on its authority, by name.
+**Alternative considered:** rebuild the register purely by replaying the audit
+log — rejected, the audit entry carries `agent.Evidence`, which deliberately has
+no account ids, and adding them means either putting account identifiers into the
+model-facing evidence or extending what the hash covers. A standalone table with
+no cross-reference — rejected, it loses the one property this project has spent
+the most effort earning.
+**My answer before seeing yours:** chose "linked + verified" from three options
+when asked.
+
+## 2026-08-27 — Enforce after recording, never before
+**Chose:** `enforceDecision` runs only once the decision is committed to the
+audit log, and carries that sequence number onto every lease. A lease that fails
+to persist is logged and not counted as held.
+**Why:** it makes "a hold whose authority cannot be named is one this system will
+not place" true rather than merely intended. In the other order a log write
+failure would leave money held with no record of why, which is the exact
+condition the audit chain exists to make impossible.
+**Alternative considered:** impose in memory first for latency — rejected, the
+saving is microseconds against a decision that already took a model call.
+**My answer before seeing yours:** n/a — follow-through on the agreed design.
+
+## 2026-08-27 — Surface why nothing is frozen rather than tuning until something is
+**Chose:** the holds page reads the decisions' own recorded adjustments back and
+explains the zero — how many asked to block, how many were refused on the value
+ceiling, how many were decided by the fallback that never blocks. Added a
+`-block-ceiling` flag to `cmd/serve`, defaulting to the unchanged policy value.
+**Why:** every high-scoring ring in this ledger moves 17.7m to 862m against a 10m
+autonomous ceiling, so on the console's queue the freeze path is unreachable. A
+page showing zero freezes reads as a broken feature when it is the envelope
+working. The honest fix is to say so, not to lower the ceiling so the demo looks
+better — the ceiling is denominated in currency and this dataset's amounts are
+not real currency, which is a property of the data, not a reason to weaken the
+policy. The flag exists so the autonomous path can be exercised at all, and it
+logs loudly that it is a demonstration setting.
+**Alternative considered:** quietly lower `BlockMaxAmount` to fit the dataset —
+rejected, it is tuning a safety limit for appearances, and it would be the one
+number in the demo that was chosen to make the demo work.
+**My answer before seeing yours:** n/a — found while verifying that the freeze
+path was reachable at all.

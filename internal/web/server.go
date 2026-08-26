@@ -27,6 +27,7 @@ import (
 	"github.com/vinayaktyagi10/warren/internal/audit"
 	"github.com/vinayaktyagi10/warren/internal/baseline"
 	"github.com/vinayaktyagi10/warren/internal/detect"
+	"github.com/vinayaktyagi10/warren/internal/enforce"
 	"github.com/vinayaktyagi10/warren/internal/latency"
 	"github.com/vinayaktyagi10/warren/internal/score"
 )
@@ -40,6 +41,14 @@ type Server struct {
 	tmpl  *template.Template
 	chain *agent.Chain
 	log   *audit.Log
+
+	// holds is the persisted restriction ledger and register is the same state
+	// in memory. Both exist because the console answers two different questions:
+	// "is this account held right now" is a map lookup, and "what did we do to
+	// this account and on whose authority" is a chain walk.
+	holds    *enforce.Store
+	register *enforce.Register
+	limits   enforce.Limits
 
 	ledger     *detect.Ledger
 	candidates []detect.Candidate // held-out only
@@ -69,7 +78,8 @@ type Server struct {
 
 // New builds the server, running the whole pipeline once.
 func New(ctx context.Context, pool *pgxpool.Pool, cfg detect.Config,
-	chain *agent.Chain, auditLog *audit.Log, trainFraction float64) (*Server, error) {
+	chain *agent.Chain, auditLog *audit.Log, holds *enforce.Store,
+	trainFraction float64) (*Server, error) {
 
 	funcs := template.FuncMap{
 		"pct":   func(f float64) string { return fmt.Sprintf("%.1f%%", 100*f) },
@@ -96,8 +106,10 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg detect.Config,
 
 	s := &Server{
 		pool: pool, tmpl: tmpl, chain: chain, log: auditLog, cfg: cfg,
+		holds: holds, register: &enforce.Register{}, limits: enforce.DefaultLimits(),
 		decided: make(map[int]agent.Assessment),
 	}
+	s.limits.Pass = fmt.Sprintf("%dh/%dh", cfg.WindowHours, cfg.StrideHours)
 	if err := s.prepare(ctx, trainFraction); err != nil {
 		return nil, err
 	}
@@ -176,6 +188,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/audit/verify", s.handleVerify)
 	mux.HandleFunc("POST /api/audit/tamper/{seq}", s.handleTamper)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	mux.HandleFunc("GET /holds", s.handleHolds)
+	mux.HandleFunc("POST /api/holds/lift", s.handleLift)
+	mux.HandleFunc("POST /api/holds/verify", s.handleVerifyHolds)
 	return mux
 }
 
@@ -499,8 +514,12 @@ func (s *Server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	s.decided[rank] = a
 	s.mu.Unlock()
 
+	held, bounds := s.enforceDecision(r.Context(), rank, a, seq)
+
 	writeJSON(w, map[string]any{
 		"action":      string(a.Action),
+		"held":        held,
+		"heldBounds":  bounds,
 		"proposed":    string(a.Proposed),
 		"adjusted":    a.Adjusted(),
 		"confidence":  a.Confidence,
@@ -574,13 +593,22 @@ func (s *Server) SeedAudit(ctx context.Context, n int) {
 			continue
 		}
 		a := s.chain.Assess(ctx, ev)
-		if _, _, err := s.log.Record(ctx, ev, a); err != nil {
+		seq, _, err := s.log.Record(ctx, ev, a)
+		if err != nil {
 			log.Printf("seed: record ring %d: %v", rank, err)
 			return
 		}
 		s.mu.Lock()
 		s.decided[rank] = a
 		s.mu.Unlock()
+
+		// A seeded decision enforces exactly as a live one does. Recording the
+		// decision but skipping its consequence would make the holds page a
+		// different kind of thing from the audit page — a display rather than a
+		// record of what the system actually did.
+		if held, _ := s.enforceDecision(ctx, rank, a, seq); held > 0 {
+			log.Printf("seed: ring %d held %d accounts on decision %d", rank, held, seq)
+		}
 		seeded++
 	}
 	log.Printf("seed: %d decisions recorded in %s", seeded, time.Since(start).Round(time.Millisecond))

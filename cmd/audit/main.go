@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/vinayaktyagi10/warren/internal/audit"
 	"github.com/vinayaktyagi10/warren/internal/db"
+	"github.com/vinayaktyagi10/warren/internal/enforce"
 )
 
 func main() {
@@ -71,12 +73,55 @@ func main() {
 		}
 		fmt.Printf("CHAIN BROKEN at entry %d\n\n  %s\n\n", res.BrokenSeq, res.BrokenReason)
 		fmt.Printf("the decision recorded at entry %d is not the decision that was made.\n", res.BrokenSeq)
+		reportOrphanedHolds(ctx, pool, res.BrokenSeq)
 		os.Exit(1)
 	}
 
 	if err := list(ctx, pool); err != nil {
 		log.Fatalf("list: %v", err)
 	}
+}
+
+// reportOrphanedHolds names the accounts whose money is being held on the
+// authority of a decision that no longer verifies.
+//
+// This is what the two chains exist to make sayable. A broken hash on its own is
+// an abstraction — it says a record changed. Joined to the restriction ledger it
+// says something an operator has to act on today: these people's transfers are
+// being stopped, and the reason given for stopping them is no longer the reason
+// that was recorded. Either the log is restored or the holds come off.
+func reportOrphanedHolds(ctx context.Context, pool *pgxpool.Pool, brokenSeq int64) {
+	store, err := enforce.NewStore(ctx, pool)
+	if err != nil {
+		return
+	}
+	held, err := store.ActiveAt(ctx, time.Now().UTC())
+	if err != nil {
+		return
+	}
+	var orphaned []enforce.Held
+	for _, h := range held {
+		if h.Tier == enforce.TierFrozen && !h.Expired &&
+			h.DecisionSeq != nil && *h.DecisionSeq >= brokenSeq {
+			orphaned = append(orphaned, h)
+		}
+	}
+	if len(orphaned) == 0 {
+		return
+	}
+	sort.Slice(orphaned, func(i, j int) bool { return orphaned[i].Account < orphaned[j].Account })
+
+	fmt.Printf("\n%d accounts are currently frozen on the authority of entry %d or later:\n\n",
+		len(orphaned), brokenSeq)
+	for i, h := range orphaned {
+		if i == 5 {
+			fmt.Printf("  ... and %d more\n", len(orphaned)-5)
+			break
+		}
+		fmt.Printf("  %-24s ring %-5d expires %s  (decision %d)\n",
+			h.Account, h.RingID, h.ExpiresAt.Format("2006-01-02 15:04"), *h.DecisionSeq)
+	}
+	fmt.Printf("\nthese holds no longer have a verifiable authority behind them.\n")
 }
 
 // list prints the log newest first, which is the order someone investigating a
