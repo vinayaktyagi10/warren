@@ -59,6 +59,11 @@ type Restriction struct {
 	DecisionSeq int64
 	Reason      string
 
+	// Pass names the detection geometry that raised the ring. Two passes with
+	// different window widths carry different evidential weight, and a lease
+	// that cannot say which one imposed it cannot justify its own length.
+	Pass string
+
 	Imposed time.Time
 	Expires time.Time
 
@@ -95,6 +100,11 @@ type Limits struct {
 	// WatchFor is how long a watch lasts. Longer than a freeze because it costs
 	// nobody anything — it is a note, not a hold.
 	WatchFor time.Duration
+
+	// Pass names the detection geometry these limits belong to. Lease length is
+	// the lever that makes evidence weight visible: a pass that sees 24 hours
+	// before acting should not buy the same 72-hour hold as one that saw 72.
+	Pass string
 }
 
 func DefaultLimits() Limits {
@@ -139,6 +149,7 @@ func Restrictions(a agent.Assessment, c detect.Candidate, effective time.Time, l
 			Account: acct,
 			Tier:    tier,
 			RingID:  a.RingID,
+			Pass:    lim.Pass,
 			Reason:  reason,
 			Imposed: effective,
 			Expires: effective.Add(ttl),
@@ -166,11 +177,30 @@ type Register struct {
 	history []Restriction
 }
 
+// ImposeResult says what a lease did to the register. It is reported rather than
+// discarded because an extension is the observable event in an escalating
+// design: a short lease from a fast, thin-evidence pass becoming a long one when
+// a slower pass confirms the same accounts is the mechanism working, and a
+// system that cannot count it cannot show it happened.
+type ImposeResult int
+
+const (
+	ImposeNew      ImposeResult = iota // the account was unleased
+	ImposeExtended                     // an existing lease was strengthened or lengthened
+	ImposeIgnored                      // the existing lease already protected at least as well
+)
+
 // Impose records a lease. Where an account is already leased, the one that
 // protects for longer wins, and a watch never displaces a live freeze: an
 // account caught in two rings should not become easier to use because the
 // second one was judged less harshly.
-func (r *Register) Impose(x Restriction) {
+//
+// That rule is also what makes escalation work without any special case. A fast
+// pass acting on 24 hours of evidence imposes a short freeze; when a slower pass
+// later confirms the same accounts on 72 hours of evidence, its longer lease
+// simply wins. If the confirmation never comes, the short lease lapses on its own
+// and nobody has to remember to release it.
+func (r *Register) Impose(x Restriction) ImposeResult {
 	if r.current == nil {
 		r.current = make(map[int32]Restriction)
 	}
@@ -179,18 +209,25 @@ func (r *Register) Impose(x Restriction) {
 	prev, ok := r.current[x.Account]
 	if !ok {
 		r.current[x.Account] = x
-		return
+		return ImposeNew
 	}
 	switch {
 	case prev.Tier.stops() && !x.Tier.stops():
 		// A watch cannot weaken or extend a freeze.
-		return
+		return ImposeIgnored
 	case !prev.Tier.stops() && x.Tier.stops():
 		r.current[x.Account] = x
+		return ImposeExtended
 	case x.Expires.After(prev.Expires):
 		r.current[x.Account] = x
+		return ImposeExtended
 	}
+	return ImposeIgnored
 }
+
+// Source names the detection pass a lease came from, so an audit reader can tell
+// a freeze imposed on 24 hours of evidence from one imposed on 72.
+func (x Restriction) Source() string { return x.Pass }
 
 // Stopped reports whether a transfer out of this account at this instant is
 // prevented, and by what.

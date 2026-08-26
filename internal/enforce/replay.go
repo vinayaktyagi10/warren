@@ -44,6 +44,48 @@ func ThresholdDecider(p agent.Policy) Decider {
 	}
 }
 
+// Source is one detection pass feeding the register: its geometry, the
+// candidates it raised, what it scored them, how many of them the team agrees to
+// work, and how long a lease it may impose.
+//
+// Several sources share one register on purpose. That is the whole dual-geometry
+// argument in one data structure: a fast pass and a slow pass are not two systems
+// with two answers, they are two views of the same accounts arriving at different
+// times, and the register is where the later view gets to strengthen the earlier
+// one.
+type Source struct {
+	Name       string
+	Cfg        detect.Config
+	Candidates []detect.Candidate
+	Scores     []float64
+	Budget     int
+	Limits     Limits
+
+	// Enforces says whether this pass may lease into the register. A pass that
+	// detects without enforcing still raises alerts an analyst works — it simply
+	// does not get to hold anyone's money, which is the right arrangement for a
+	// geometry whose alarm arrives after the money has already moved.
+	Enforces bool
+}
+
+// SourceStat is what one pass contributed.
+type SourceStat struct {
+	Name      string
+	Window    int
+	Stride    int
+	Decisions int
+	Blocks    int
+	Holds     int
+	Declined  int
+
+	// Escalations counts leases that strengthened or lengthened one already in
+	// force. On the slow pass this is confirmation arriving: accounts a thin
+	// 24-hour read had frozen briefly, held longer because 72 hours of evidence
+	// agreed.
+	Escalations int
+	New         int
+}
+
 // ReplayConfig parameterises the measurement.
 type ReplayConfig struct {
 	// Budget is how many alerts the team agrees to work over the whole replay
@@ -103,8 +145,12 @@ type ReplayResult struct {
 
 	// CeilingValue is the laundering value a perfect oracle detector could have
 	// stopped inside this same runway, at this same window geometry. Without it
-	// the result is a number with nothing to be judged against.
+	// the result is a number with nothing to be judged against. Where several
+	// passes run together the ceiling is the narrowest one's, because the
+	// earliest any account can be leased is the moment the fastest pass closes.
 	CeilingValue float64
+
+	PerSource []SourceStat
 }
 
 // OfCeiling is the share of the achievable interception that was achieved. This
@@ -137,9 +183,32 @@ func (r ReplayResult) Interception() float64 {
 	return r.ValueLaunderingStopped / r.ValueLaunderingIn
 }
 
-// Replay walks the held-out period forward in window order, decides the alerts
-// each window closure raises, imposes the leases those decisions authorise, and
-// then checks the transfers that follow against the register.
+// Replay measures a single detection pass. It is ReplayMulti with one source,
+// kept because most of the analysis compares one geometry against another.
+func Replay(led *detect.Ledger, cands []detect.Candidate, scores []float64,
+	cfg detect.Config, rc ReplayConfig, decide Decider) (ReplayResult, *Register) {
+
+	lim := rc.Limits
+	if lim.Pass == "" {
+		lim.Pass = fmt.Sprintf("%dh", cfg.WindowHours)
+	}
+	return ReplayMulti(led, []Source{{
+		Name: lim.Pass, Cfg: cfg, Candidates: cands, Scores: scores,
+		Budget: rc.Budget, Limits: lim, Enforces: true,
+	}}, decide)
+}
+
+// ReplayMulti walks the held-out period forward through every pass's window
+// closures in one merged timeline, decides the alerts each closure raises,
+// imposes the leases those decisions authorise into a shared register, and then
+// checks the transfers that follow against it.
+//
+// Merging the timelines rather than replaying each pass separately is the point.
+// Run apart, a fast pass and a slow pass produce two numbers that cannot be
+// added, because they lease the same accounts and would double-count what they
+// stopped. Run together against one register, a lease that arrives second either
+// extends the one already there or is ignored, and the result is what the
+// combined system actually achieves.
 //
 // It is an interception measurement against the recorded ledger, and that is a
 // weaker claim than a counterfactual. Two things it deliberately does not model:
@@ -148,43 +217,53 @@ func (r ReplayResult) Interception() float64 {
 // look different, and neither can be simulated honestly from a fixed file — so
 // the number is reported as what it is, the value the leases would have sat in
 // front of, not the value the ring would ultimately have failed to move.
-func Replay(led *detect.Ledger, cands []detect.Candidate, scores []float64,
-	cfg detect.Config, rc ReplayConfig, decide Decider) (ReplayResult, *Register) {
-
+func ReplayMulti(led *detect.Ledger, sources []Source, decide Decider) (ReplayResult, *Register) {
 	res := ReplayResult{RingsHit: make(map[int32]bool)}
-	if len(led.Txns) == 0 || len(cands) == 0 {
+	if len(led.Txns) == 0 || len(sources) == 0 {
 		return res, &Register{}
 	}
 
-	width := time.Duration(cfg.WindowHours) * time.Hour
-
-	// The alert budget becomes a score threshold, so enforcement is measured at
-	// the same operating point as the published precision and recall.
-	threshold := budgetThreshold(scores, rc.Budget)
-
-	// Candidates grouped by the window that raised them, windows in time order.
-	byWindow := make(map[time.Time][]int)
-	for i, c := range cands {
-		byWindow[c.Window] = append(byWindow[c.Window], i)
+	// One event per window closure per pass, in time order. Ties break on the
+	// narrower window first: when a fast and a slow pass close at the same
+	// instant, the thin lease should already be in place for the thick one to
+	// extend, which is the escalation the design exists to demonstrate.
+	type event struct {
+		at    time.Time
+		src   int
+		cands []int
 	}
-	closures := make([]time.Time, 0, len(byWindow))
-	for ws := range byWindow {
-		closures = append(closures, ws.Add(width))
+	var events []event
+	thresholds := make([]float64, len(sources))
+	stats := make([]SourceStat, len(sources))
+
+	for si, src := range sources {
+		thresholds[si] = budgetThreshold(src.Scores, src.Budget)
+		stats[si] = SourceStat{Name: src.Name, Window: src.Cfg.WindowHours, Stride: src.Cfg.StrideHours}
+		width := time.Duration(src.Cfg.WindowHours) * time.Hour
+
+		byWindow := make(map[time.Time][]int)
+		for i, c := range src.Candidates {
+			byWindow[c.Window] = append(byWindow[c.Window], i)
+		}
+		for ws, idxs := range byWindow {
+			events = append(events, event{at: ws.Add(width), src: si, cands: idxs})
+		}
 	}
-	sort.Slice(closures, func(i, j int) bool { return closures[i].Before(closures[j]) })
+	sort.Slice(events, func(i, j int) bool {
+		if !events[i].at.Equal(events[j].at) {
+			return events[i].at.Before(events[j].at)
+		}
+		return sources[events[i].src].Cfg.WindowHours < sources[events[j].src].Cfg.WindowHours
+	})
 
 	reg := &Register{}
 	frozen := make(map[int32]bool)
 	watched := make(map[int32]bool)
 
-	res.From = closures[0]
+	res.From = events[0].at
 	res.To = led.Txns[len(led.Txns)-1].TS
 	res.Runway = res.To.Sub(res.From)
 
-	// Walk transfers and closures together. Both are in time order, so a single
-	// forward pass over each is enough: no transfer is ever revisited and the
-	// register is only ever consulted at instants at or after the leases in it
-	// were imposed, which is what makes lazy expiry safe.
 	txnIdx := sort.Search(len(led.Txns), func(i int) bool {
 		return !led.Txns[i].TS.Before(res.From)
 	})
@@ -195,36 +274,49 @@ func Replay(led *detect.Ledger, cands []detect.Candidate, scores []float64,
 		}
 	}
 
-	for ci, C := range closures {
-		for _, idx := range byWindow[C.Add(-width)] {
-			if scores[idx] < threshold {
+	for ei, e := range events {
+		src := sources[e.src]
+		for _, idx := range e.cands {
+			if src.Scores[idx] < thresholds[e.src] {
 				continue
 			}
-			c := cands[idx]
+			c := src.Candidates[idx]
 			ev := agent.Evidence{
 				RingID: idx, Typology: c.Typology,
 				Accounts: c.Features.Accounts, Txns: c.Features.Txns,
 				TotalAmount: c.Features.TotalAmount, MaxAmount: c.Features.MaxAmount,
 				Conservation: c.Features.Conservation, PassThrough: c.Features.PassThroughRatio,
-				SpanHours: c.Features.SpanHours, Score: scores[idx], WindowStart: c.Window,
+				SpanHours: c.Features.SpanHours, Score: src.Scores[idx], WindowStart: c.Window,
 			}
 			a := decide(ev)
 			res.Decisions++
+			stats[e.src].Decisions++
 			switch a.Action {
 			case agent.ActionBlock:
 				res.Blocks++
+				stats[e.src].Blocks++
 			case agent.ActionHold:
 				res.Holds++
+				stats[e.src].Holds++
 			default:
 				res.Allows++
 			}
 
-			leases, bounds := Restrictions(a, c, C, rc.Limits)
+			if !src.Enforces {
+				continue
+			}
+			leases, bounds := Restrictions(a, c, e.at, src.Limits)
 			if len(bounds) > 0 {
 				res.Declined++
+				stats[e.src].Declined++
 			}
 			for _, l := range leases {
-				reg.Impose(l)
+				switch reg.Impose(l) {
+				case ImposeNew:
+					stats[e.src].New++
+				case ImposeExtended:
+					stats[e.src].Escalations++
+				}
 				if l.Tier.stops() {
 					frozen[l.Account] = true
 				} else {
@@ -237,8 +329,8 @@ func Replay(led *detect.Ledger, cands []detect.Candidate, scores []float64,
 		// Enforce over the transfers between this closure and the next. Leases
 		// imposed later cannot reach backwards, which is the whole point.
 		next := res.To.Add(time.Nanosecond)
-		if ci+1 < len(closures) {
-			next = closures[ci+1]
+		if ei+1 < len(events) {
+			next = events[ei+1].at
 		}
 		for ; txnIdx < len(led.Txns); txnIdx++ {
 			t := led.Txns[txnIdx]
@@ -271,7 +363,21 @@ func Replay(led *detect.Ledger, cands []detect.Candidate, scores []float64,
 
 	res.AccountsFrozen = len(frozen)
 	res.AccountsWatched = len(watched)
-	res.CeilingValue = MeasureCeilingIn(led, cfg, res.From, res.To.Add(time.Nanosecond)).StoppableValue
+	res.PerSource = stats
+
+	// The ceiling belongs to the fastest pass: it sets the earliest instant any
+	// account in the system can be under a lease.
+	fastest := sources[0].Cfg
+	seen := false
+	for _, src := range sources {
+		if !src.Enforces {
+			continue
+		}
+		if !seen || src.Cfg.WindowHours < fastest.WindowHours {
+			fastest, seen = src.Cfg, true
+		}
+	}
+	res.CeilingValue = MeasureCeilingIn(led, fastest, res.From, res.To.Add(time.Nanosecond)).StoppableValue
 	return res, reg
 }
 
@@ -319,5 +425,16 @@ func (r ReplayResult) String() string {
 	fmt.Fprintf(&b, "against the ceiling      %.2f%% of the %.0f a perfect oracle could have stopped here\n",
 		100*r.OfCeiling(), r.CeilingValue)
 	fmt.Fprintf(&b, "labelled rings hit       %d\n", len(r.RingsHit))
+
+	if len(r.PerSource) > 1 {
+		fmt.Fprintf(&b, "\n%-14s %8s %10s %8s %8s %10s %12s\n",
+			"pass", "window", "decisions", "block", "hold", "new leases", "escalations")
+		for _, st := range r.PerSource {
+			fmt.Fprintf(&b, "%-14s %7dh %10d %8d %8d %10d %12d\n",
+				st.Name, st.Window, st.Decisions, st.Blocks, st.Holds, st.New, st.Escalations)
+		}
+		fmt.Fprint(&b, "escalations are leases that strengthened one already in force: a slower pass\n"+
+			"confirming accounts a faster one had frozen briefly on thinner evidence\n")
+	}
 	return b.String()
 }

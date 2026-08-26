@@ -494,3 +494,77 @@ transfer is not removed from what later windows detect, and an operator whose
 accounts are frozen does not adapt. Both would move the number and neither can be
 simulated honestly from a fixed file, so the figure is what the leases would have
 sat in front of, not what the ring would ultimately have failed to move.
+
+---
+
+# 14. Two geometries, one role each — and the escalating lease that did not earn its place
+
+Finding 13 ended with an argument rather than a result: detection recall and
+enforcement runway pull in opposite directions, so run two passes instead of
+compromising on one width. This is that built and measured, including the part
+that did not work.
+
+Each pass gets its **own fitted ranker**. A 24-hour window raises smaller, tighter
+groups than a 72-hour one, so a single fit would be a compromise between two
+candidate distributions and would describe neither. Same nine features, different
+coefficients — both models stay as explainable as the original.
+
+## The escalating lease, and why it is not in the recommended configuration
+
+The design chosen before building: a fast pass acting on 24 hours of evidence
+imposes a short freeze; when the slow pass later confirms the same accounts on 72
+hours of evidence, its longer lease replaces the short one. Unconfirmed leases
+lapse on their own. The register's existing keep-the-longer-lease rule implements
+it for free, and `Register.Impose` now reports whether a lease was new, an
+extension, or ignored, so escalations can be counted rather than assumed.
+
+It works mechanically — the 72h pass logged 2,559 escalations over the held-out
+period. It also makes enforcement slightly worse.
+
+At a matched 375-alert budget for the narrow pass:
+
+| configuration | rings hit | laundering stopped | legitimate held | action precision |
+|---|---:|---:|---:|---:|
+| 24h/6h leasing alone | 31 | 12.26m | 161.6m | **7.05%** |
+| both passes leasing | 39 | 12.49m | 175.1m | 6.66% |
+
+Letting the wide pass lease buys **+8 rings hit and +1.9% laundering value, for
++8.4% more innocent money held**. On value that is a bad trade, and against this
+project's stated posture — spend the budget making a wrong answer safe rather
+than making the answer marginally righter — it is the wrong side of it.
+
+**The confound that nearly hid this.** The first comparison put the dual at
+375+375 against each single geometry at 375, and the dual looked better on every
+axis. It was spending 750 alerts against their 250 — three passes at 250 each had
+looked better still. Held to a constant *total* analyst budget the advantage
+inverted: 24h/6h alone at 750 alerts stops 16.13m against the dual's 12.49m. Alert
+budget is the resource this whole system spends, and any comparison that lets one
+configuration quietly spend three times as much is not a comparison.
+
+## What the measurement actually supports
+
+Two passes, one role each. The wide pass detects and never leases; the narrow
+pass leases and its queue is nobody's problem.
+
+| configuration | detection recall | rings hit | value stopped | % of ceiling |
+|---|---:|---:|---:|---:|
+| 72h/24h alone | 39.4% | 10 | 230k | 0.04% |
+| 24h/6h alone | 18.4% | 31 | 12.26m | 0.66% |
+| **72h detects, 24h leases** | **39.4%** | **31** | **12.26m** | **0.66%** |
+
+The combined row is not a compromise between the other two — it takes the better
+number from each. That is the entire case for the design, and it is a smaller
+claim than "running both catches more", which is what the first measurement
+appeared to say and does not.
+
+The escalation mechanism stays in the register, because overlapping windows inside
+a single pass re-lease the same accounts and the merge rule is needed there
+regardless. It is simply not doing cross-pass work in the recommended
+configuration, and the code says so rather than implying otherwise.
+
+## The honest size of all this
+
+Interception is still 0.66% of a ceiling that is itself 31.75% at this geometry.
+Two passes did not fix that and were never going to: finding 13's ceiling is a
+property of when evidence exists, not of how many detectors read it. What changed
+is that the queue no longer has to be sacrificed to get any enforcement at all.

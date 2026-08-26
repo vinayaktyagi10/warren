@@ -264,3 +264,53 @@ thing enforcement exists to do and worse than 72h at the thing the queue exists
 to do.
 **My answer before seeing yours:** n/a — a conclusion from the sweep, not yet a
 build. Flagged for a decision rather than made unilaterally.
+
+## 2026-08-27 — Two detection passes, one role each
+**Chose:** run a 72h/24h pass and a 24h/6h pass over the same ledger, each with
+its own fitted ranker. The wide pass feeds the analyst queue and never leases;
+the narrow pass leases into the restriction register. `Source.Enforces` makes
+"detects but does not hold anyone's money" expressible.
+**Why:** measured. A single width has to choose — 72h gives 39.4% detection
+recall and stops 230k, 24h gives 18.4% recall and stops 12.26m. Split by role the
+system takes the better number from each: 39.4% recall for the queue and 12.26m
+stopped. That is a smaller claim than "two passes catch more", which is what the
+first comparison appeared to show and did not.
+**Alternative considered:** one compromise width at 48h/12h — rejected, it is
+worse than 24h at what enforcement is for and worse than 72h at what the queue is
+for. A shared ranker across both passes — rejected, the geometries raise
+different candidate distributions and one fit would describe neither.
+**My answer before seeing yours:** chose "escalating leases" from three options
+when asked about pass authority; the split-role arrangement came out of measuring
+that choice.
+
+## 2026-08-27 — The escalating lease was built, measured, and left out of the default
+**Chose:** keep `Register.Impose`'s keep-the-longer-lease merge and its
+new/extended/ignored reporting, but do not let the wide pass lease in the
+recommended configuration.
+**Why:** the mechanism works — 2,559 escalations logged over the held-out period —
+but letting the 72h pass lease buys +8 rings hit and +1.9% laundering value for
++8.4% more innocent money held, and drops action precision from 7.05% to 6.66%.
+Against this project's stated posture, spending false-positive budget for a 1.9%
+gain in the true positive is the wrong side of the trade. The merge rule stays
+because overlapping windows inside a single pass re-lease the same accounts and
+need it regardless.
+**Alternative considered:** keep both passes leasing and quote the +8 rings —
+rejected; it is the flattering half of a measurement whose other half is 13.6m of
+someone else's money.
+**My answer before seeing yours:** escalating leases, chosen from options. The
+measurement contradicted the choice and the choice lost.
+
+## 2026-08-27 — Comparisons hold total alert budget constant
+**Chose:** when comparing configurations, the sum of alerts across passes is the
+quantity held fixed, not the per-pass budget.
+**Why:** the first dual-geometry comparison ran 375 alerts in each of two passes
+against 375 in each single pass, so the dual was spending 750 against 375 and
+looked better on every axis. A three-pass version looked better still, for the
+same reason. Held to a constant total the ordering inverted: 24h/6h alone at 750
+alerts stops 16.13m against the dual's 12.49m. Alert budget is the resource the
+whole system spends; a comparison that lets one side spend triple is not a
+comparison, and this is the fourth time in this project a good-looking number has
+turned out to be an accounting artefact.
+**Alternative considered:** report per-pass budgets and let the reader adjust —
+rejected, nobody does, and the headline would have been wrong.
+**My answer before seeing yours:** n/a — caught during verification.
