@@ -320,3 +320,75 @@ This is what 95% of laundering transfers sitting inside the ordinary amount
 range for their channel looks like from the detector's side. The evidence is not
 in the row. It is in the relationship between rows, and no amount of feature
 engineering on a single transaction recovers it.
+
+---
+
+# 12. Latency, split three ways
+
+The BFSI literature sets a sub-100ms bar for fraud decisioning. That bar was
+written for per-transaction scoring, and WARREN's unit of decision is a group
+of accounts observed over a 72-hour window, so "how fast is it" has three
+different answers and quoting only one of them would be dishonest either way.
+
+Measured on the held-out run, 599,689 filtered transfers, 95,318 candidates,
+10 windows, single machine:
+
+| measurement | n | p50 | p95 | p99 | max |
+|---|---:|---:|---:|---:|---:|
+| score one candidate | 95,318 | 150ns | 180ns | 3.5µs | 28.9µs |
+| — the timer's own floor | 20,000 | 20ns | 30ns | 31ns | 5.2µs |
+| detection per transfer | 10 | 832ns | 1.3µs | 1.3µs | 1.3µs |
+| arrival to decision, steady state | 411,609 | 12.1h | 22.9h | 23.8h | 24.0h |
+| arrival to decision, incl. cold start | 599,689 | 17.6h | 66.5h | 71.8h | 72.0h |
+
+Percentiles are nearest-rank over every retained sample — sorted exactly, not
+sketched. At these sample counts an exact sort costs under a megabyte, and a
+histogram or t-digest would have put approximation error into the one number
+that exists to be defended.
+
+**Scoring clears the bar by five orders of magnitude, and the floor row is why
+that claim can be believed.** The scoring path is fast enough that the
+instrument is a visible share of the reading, so the run measures its own
+timer on the same machine at the same time: two clock reads with nothing
+between them cost 20ns at p50. A 150ns score is seven times the floor, which
+is a real measurement. Had it come back at 25ns, the honest report would have
+been "at or below what this timer can resolve", not "6× faster".
+
+**Arrival to decision does not clear the bar and cannot.** The evidence for a
+ring does not exist until the window closes. Window closures happen every
+stride, so in steady state the wait is bounded by the 24h stride rather than
+the 72h width — and the measurement lands exactly on it, max 24.0h, p50 12.1h
+against a predicted stride/2. That agreement is the check that the number is
+the architecture rather than an accident of the run.
+
+## The cold start would have overstated it by 3×
+
+The first measurement reported p95 66.5h and max 72.0h — nearly three times
+the stride bound, which is what made it worth chasing rather than publishing.
+
+The cause is the harness, not the detector. Windows begin at the first
+transfer in the ledger. A transfer arriving on day one is therefore covered
+only by windows that started at or after the ledger did, when in a running
+system it would also have been covered by windows opened the previous two
+days. Those transfers wait for a later closure than deployment would make them
+wait, and with only 10 windows in the active period the cold start is 188,080
+of 599,689 transfers — 31% of the sample, enough to drag p95 to nearly the
+window width.
+
+Steady state begins at `windows[0].Start + width - stride`, the first arrival
+for which every window that should cover it actually exists. Both rows are
+reported: publishing only the steady-state figure would hide that the first
+day of any real deployment genuinely is slower, and publishing only the
+all-transfers figure would blame the detector for the shape of the test file.
+
+This is the same class of mistake as finding 5 — a property of how the data
+was assembled, read as a property of the system.
+
+## What the number is for
+
+The argument is not that 12 hours is fast. It is that a per-transaction scorer
+answering in 10ms is answering a question that cannot detect this class of
+loss at all: finding 11 measures 95% of laundering transfers sitting inside
+the ordinary amount range for their channel. The latency is the price of
+looking at the ring instead of the payment, and it is stated rather than
+hidden behind the one sub-microsecond number that flatters.

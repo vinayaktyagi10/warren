@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/vinayaktyagi10/warren/internal/graph"
+	"github.com/vinayaktyagi10/warren/internal/latency"
 )
 
 // Config controls the detector. Defaults come from measurements on the training
@@ -236,8 +237,20 @@ func Trim(led *Ledger, cut time.Time) *Ledger {
 
 // Detect walks the ledger in overlapping windows and returns the groups found.
 func Detect(led *Ledger, cfg Config) []Candidate {
+	c, _ := DetectTimed(led, cfg)
+	return c
+}
+
+// DetectTimed is Detect with the per-window cost recorded alongside.
+//
+// The timing is per window rather than for the pass as a whole because a window
+// closure is the unit of work a deployed detector would actually do: the batch
+// run here processes years at once, but in service it would wake every stride
+// and handle one window. A total divided by the number of windows would hide
+// that a busy window costs an order of magnitude more than a quiet one.
+func DetectTimed(led *Ledger, cfg Config) ([]Candidate, []latency.Window) {
 	if len(led.Txns) == 0 {
-		return nil
+		return nil, nil
 	}
 	window := time.Duration(cfg.WindowHours) * time.Hour
 	stride := time.Duration(cfg.StrideHours) * time.Hour
@@ -250,15 +263,25 @@ func Detect(led *Ledger, cfg Config) []Candidate {
 	// earliest sighting kept.
 	seen := make(map[string]bool)
 	var out []Candidate
+	var timings []latency.Window
 
 	for ws := start; !ws.After(end); ws = ws.Add(stride) {
 		we := ws.Add(window)
 		lo := sort.Search(len(led.Txns), func(i int) bool { return !led.Txns[i].TS.Before(ws) })
 		hi := sort.Search(len(led.Txns), func(i int) bool { return !led.Txns[i].TS.Before(we) })
-		if hi-lo < cfg.MinTxns {
-			continue
+
+		// A window is recorded whether or not it clears MinTxns. Skipping the
+		// quiet ones would report the cost of only the expensive half of the
+		// work, and would leave the transfers inside them looking uncovered when
+		// in fact they were seen and dismissed.
+		t0 := time.Now()
+		var found []Candidate
+		if hi-lo >= cfg.MinTxns {
+			found = detectWindow(led.Txns[lo:hi], cfg, ws)
 		}
-		for _, c := range detectWindow(led.Txns[lo:hi], cfg, ws) {
+		timings = append(timings, latency.Window{Start: ws, Txns: hi - lo, Process: time.Since(t0)})
+
+		for _, c := range found {
 			key := candidateKey(c.TxnIDs)
 			if seen[key] {
 				continue
@@ -267,7 +290,7 @@ func Detect(led *Ledger, cfg Config) []Candidate {
 			out = append(out, c)
 		}
 	}
-	return out
+	return out, timings
 }
 
 // detectWindow groups the transfers inside one time slice.

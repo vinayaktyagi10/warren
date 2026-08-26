@@ -125,5 +125,81 @@
     </div>
   </div>
 
+  <div class="card mt">
+    <h2>Latency — three questions, three answers</h2>
+    <p class="subtitle">
+      The BFSI literature sets a sub-100ms bar for fraud decisioning. That bar was written
+      for per-transaction scoring, and WARREN's unit of decision is a group of accounts over
+      a 72-hour window. Quoting only the number that clears it would be the flattering
+      framing, so all three are here.
+    </p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Measurement</th>
+          <th class="num">Samples</th>
+          <th class="num">p50</th>
+          <th class="num">p95</th>
+          <th class="num">p99</th>
+          <th class="num">max</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Score one candidate<div class="small muted">feature vector, standardise, apply coefficients</div></td>
+          <td class="num mono">{{num .Latency.Score.N}}</td>
+          <td class="num mono v-green">{{dur .Latency.Score.P50}}</td>
+          <td class="num mono v-green">{{dur .Latency.Score.P95}}</td>
+          <td class="num mono v-green">{{dur .Latency.Score.P99}}</td>
+          <td class="num mono">{{dur .Latency.Score.Max}}</td>
+        </tr>
+        <tr class="faint">
+          <td>&nbsp;&nbsp;the timer's own floor<div class="small muted">two clock reads with nothing between them</div></td>
+          <td class="num mono">{{num .Latency.Floor.N}}</td>
+          <td class="num mono">{{dur .Latency.Floor.P50}}</td>
+          <td class="num mono">{{dur .Latency.Floor.P95}}</td>
+          <td class="num mono">{{dur .Latency.Floor.P99}}</td>
+          <td class="num mono">{{dur .Latency.Floor.Max}}</td>
+        </tr>
+        <tr>
+          <td>Detection per transfer<div class="small muted">one window's graph pass, divided by the transfers in it</div></td>
+          <td class="num mono">{{num .Latency.Amortised.N}}</td>
+          <td class="num mono v-green">{{dur .Latency.Amortised.P50}}</td>
+          <td class="num mono v-green">{{dur .Latency.Amortised.P95}}</td>
+          <td class="num mono v-green">{{dur .Latency.Amortised.P99}}</td>
+          <td class="num mono">{{dur .Latency.Amortised.Max}}</td>
+        </tr>
+        <tr>
+          <td>Arrival to decision<div class="small muted">a transfer lands; a bounded decision covering it exists</div></td>
+          <td class="num mono">{{num .Latency.Decision.N}}</td>
+          <td class="num mono v-orange">{{dur .Latency.Decision.P50}}</td>
+          <td class="num mono v-orange">{{dur .Latency.Decision.P95}}</td>
+          <td class="num mono v-orange">{{dur .Latency.Decision.P99}}</td>
+          <td class="num mono">{{dur .Latency.Decision.Max}}</td>
+        </tr>
+        <tr class="faint">
+          <td>&nbsp;&nbsp;including cold start<div class="small muted">{{num .Latency.Warmup}} transfers arriving before the windows overlapped fully</div></td>
+          <td class="num mono">{{num .Latency.DecisionAll.N}}</td>
+          <td class="num mono">{{dur .Latency.DecisionAll.P50}}</td>
+          <td class="num mono">{{dur .Latency.DecisionAll.P95}}</td>
+          <td class="num mono">{{dur .Latency.DecisionAll.P99}}</td>
+          <td class="num mono">{{dur .Latency.DecisionAll.Max}}</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="section-note">
+      Scoring clears the 100ms bar by roughly six orders of magnitude, and the floor row is
+      there so that claim can be checked: the reading is several times the cost of taking it,
+      not the clock measuring itself. Arrival to decision does not clear the bar and cannot,
+      because the evidence for a ring does not exist until the window closes. The ceiling is
+      the 24-hour stride between window closures, and the measurement lands exactly on it,
+      which is the check that the number is the architecture rather than an accident. That
+      wait is the honest cost of detecting the ring instead of the payment, and what it buys
+      is a class of loss a 10ms per-transaction scorer is structurally unable to see at all.
+    </div>
+  </div>
+
 </div>
 {{template "foot" .}}{{end}}

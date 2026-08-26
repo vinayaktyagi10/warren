@@ -71,8 +71,9 @@ func main() {
 	}
 
 	start = time.Now()
-	candidates := detect.Detect(led, cfg)
-	log.Printf("detected %d candidate rings in %s", len(candidates), time.Since(start).Round(time.Millisecond))
+	candidates, windows := detect.DetectTimed(led, cfg)
+	detectWall := time.Since(start)
+	log.Printf("detected %d candidate rings in %s", len(candidates), detectWall.Round(time.Millisecond))
 
 	if *analyse {
 		fmt.Print("\n", detect.AnalyseFeatures(led, candidates))
@@ -107,6 +108,9 @@ func main() {
 
 	ranked := detect.EvaluateRanked(led, test, scores, []int{50, 100, 250, 500, 1000, 2500, 5000, len(test)})
 	fmt.Print("\n=== ranked on held-out data, by alert budget ===\n\n", ranked.String())
+
+	lat := detect.MeasureLatency(led, candidates, windows, cfg, detectWall, model.Predict)
+	fmt.Print("\n=== latency ===\n\n", lat.String())
 }
 
 func countTrue(b []bool) int {

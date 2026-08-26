@@ -137,3 +137,62 @@ the nav item — rejected, per-shape recall and the ranker's coefficients are th
 material for the architecture-defence round and deserve room, not a strip.
 **My answer before seeing yours:** n/a — mechanical follow-through on an agreed
 UI list.
+
+## 2026-08-27 — Publish three latencies, not one
+**Chose:** measure and publish all three meanings of "latency" side by side —
+score-per-candidate, amortised detection cost per transfer, and arrival-to-
+decision — at p50/p95/p99, on stdout from `cmd/detect` and on the console's
+performance page. Percentiles are nearest-rank over every retained sample, held
+in a plain sorted slice.
+**Why:** the BFSI report's sub-100ms bar was written for per-transaction
+scoring, and WARREN's unit of decision is a group over a 72h window. Only the
+first of the three clears the bar, and quoting only that one would be the
+flattering framing the working style forbids. Published together they make the
+actual argument: the wait exists because the evidence does, and the thing being
+bought with it is a class of loss a 10ms scorer cannot see. Nearest-rank on a
+sorted slice because 95k samples is under a megabyte and a t-digest or
+histogram would put approximation error into the number most likely to be
+challenged — bounded memory is not a constraint this project has.
+**Alternative considered:** publish score latency alone and claim the bar is
+met — rejected, it is true and misleading. Streaming quantile sketch — rejected,
+solves a problem at a scale this does not reach, at the cost of exactness.
+Interpolated percentiles — rejected, nearest-rank means every figure printed is
+a measurement that actually happened.
+**My answer before seeing yours:** "publish all three, p50/p95/p99, console and
+stdout" — asked and answered before implementation. The aggregation structure
+was left open and chosen as above.
+
+## 2026-08-27 — Measure the timer's own floor alongside the score path
+**Chose:** every run measures the cost of two clock reads with nothing between
+them and prints it directly under the score-latency row.
+**Why:** scoring a candidate takes ~150ns and `time.Now()` twice costs ~20ns on
+this machine. Without the floor there is no way to tell a real sub-microsecond
+measurement from the instrument measuring itself, and "we score in 150ns" is
+exactly the claim a panel should push on. With the floor beside it the reading
+is defensible: seven times the cost of taking it.
+**Alternative considered:** time a batch of 95k candidates and divide —
+rejected, it removes the per-call overhead but also removes the distribution,
+and p95/p99 were the requirement. Ignore the issue — rejected, it is the same
+"measure before believing" failure as the three artefacts already in FINDINGS.
+**My answer before seeing yours:** n/a — a correctness fix inside an agreed
+measurement, not a separate design choice.
+
+## 2026-08-27 — Report steady-state and cold-start decision latency separately
+**Chose:** `MeasureLatency` reports arrival-to-decision twice: over transfers
+that had a full set of overlapping windows available, and over every transfer
+in the run, with the excluded count stated.
+**Why:** the first measurement came back at p95 66.5h against a stride bound of
+24h. The cause was the harness — windows start at the ledger's first transfer,
+so the first 48h of arrivals are covered by fewer windows than a running system
+would have opened, and with only 10 windows that cold start is 31% of the
+sample. Reporting only the all-transfers figure blames the detector for the
+shape of the test file; reporting only steady state hides that the first day of
+a real deployment is genuinely slower. Once separated, steady state lands
+exactly on the predicted stride bound (p50 12.1h, max 24.0h), which is the
+check that the number is the architecture and not an accident.
+**Alternative considered:** silently drop the warm-up transfers — rejected, it
+is the same class of error as trap #3 in reverse, quietly trimming data until
+the number looks right. Report only the raw figure — rejected, it is a
+measurement of the harness presented as a measurement of the system.
+**My answer before seeing yours:** n/a — caught during verification, after the
+approach was agreed.

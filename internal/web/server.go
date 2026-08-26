@@ -27,6 +27,7 @@ import (
 	"github.com/vinayaktyagi10/warren/internal/audit"
 	"github.com/vinayaktyagi10/warren/internal/baseline"
 	"github.com/vinayaktyagi10/warren/internal/detect"
+	"github.com/vinayaktyagi10/warren/internal/latency"
 	"github.com/vinayaktyagi10/warren/internal/score"
 )
 
@@ -47,10 +48,11 @@ type Server struct {
 	txnByID    map[int32]*detect.Txn
 	typologies map[int32]string
 
-	model  *score.Model
-	report *detect.Report
-	ranked *detect.RankedReport
-	cfg    detect.Config
+	model   *score.Model
+	report  *detect.Report
+	ranked  *detect.RankedReport
+	latency latency.Report
+	cfg     detect.Config
 
 	// The per-transaction scorer WARREN is measured against, plus where each
 	// held-out transfer ranked under it.
@@ -84,6 +86,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg detect.Config,
 		},
 		"upper":       func(s string) string { return template.HTMLEscapeString(s) },
 		"actionClass": actionClass,
+		"dur":         latency.Short,
 		"add":         func(a, b int) int { return a + b },
 	}
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(content, "templates/*.html")
@@ -123,7 +126,9 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 		return err
 	}
 
-	all := detect.Detect(led, s.cfg)
+	detectStart := time.Now()
+	all, windows := detect.DetectTimed(led, s.cfg)
+	detectWall := time.Since(detectStart)
 	cut := detect.SplitTime(led, trainFraction)
 	train, test := detect.Split(all, cut)
 	s.model = score.Train(detect.Vectors(train), detect.Labels(led, train), score.DefaultTrainOpts())
@@ -142,6 +147,10 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	s.report = detect.Evaluate(led, all, s.typologies)
 	s.ranked = detect.EvaluateRanked(led, test, s.scores,
 		[]int{50, 100, 250, 500, 1000, 2500, len(test)})
+
+	s.latency = detect.MeasureLatency(led, all, windows, s.cfg, detectWall, s.model.Predict)
+	log.Printf("latency: score p50 %s, arrival to decision p50 %s",
+		latency.Short(s.latency.Score.P50), latency.Short(s.latency.Decision.P50))
 
 	s.prepareBaseline(led, cut)
 	s.heroPattern, s.heroTxns = s.pickHero()
@@ -649,6 +658,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"Budgets": s.budgetRows(),
 		"Report":  s.report,
 		"Weights": s.modelWeights(),
+		"Latency": s.latency,
 	})
 }
 
