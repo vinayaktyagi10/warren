@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -78,7 +79,7 @@ func main() {
 	sources := make([]enforce.Source, 0, len(geoms))
 	for _, g := range geoms {
 		src := buildSource(led, base, g, cut, *budget, *maxAccounts)
-		src.Enforces = *enforcing == "" || strings.Contains(*enforcing, g.String())
+		src.Enforces = *enforcing == "" || slices.Contains(strings.Split(*enforcing, ","), g.String())
 		sources = append(sources, src)
 	}
 
