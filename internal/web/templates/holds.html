@@ -9,6 +9,21 @@
     audit chain, so if the record fails, nothing is held.
   </p>
 
+  <div class="card mb">
+    <h2>Two geometries, one of which may act</h2>
+    <p class="small">
+      WARREN runs detection twice. The <b>{{.Analyst}}</b> pass feeds the alert queue a
+      person works; it never leases, whatever it decides. The <b>{{.Enforcer}}</b> pass is
+      the only one with authority to place a hold. Narrow windows decide sooner, and
+      deciding sooner is the whole of what enforcement can buy — an oracle detector
+      told the true ring membership could stop 10.76% of ring value at 72-hour windows
+      and 31.75% at 24-hour ones. Letting the wide pass lease as well was measured at
+      <b>+8.4% more innocent money held for +1.9% of the laundering value</b>, which is
+      the wrong side of that trade. So the gates already on blocking are the only gates
+      on enforcement; there is no second, looser path to freezing an account.
+    </p>
+  </div>
+
   <div class="grid grid-4 mb">
     <div class="stat">
       <div class="stat-label">Frozen</div>
@@ -69,6 +84,62 @@
     </p>
   </div>
   {{end}}
+
+  <div class="card mb">
+    <div class="row-between">
+      <h2>The pass that may act &mdash; {{.Enforcer}}</h2>
+      <div class="small muted">block needs score &ge; {{f2 .Policy.BlockMinScore}}, confidence &ge; {{f2 .Policy.BlockMinConfidence}}, total &le; {{money .Policy.BlockMaxAmount}}</div>
+    </div>
+    <p class="small muted">
+      The top of the narrow queue, with everything the block gate reads on the same row.
+      A ring the gate cannot pass says so here rather than silently doing nothing.
+    </p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th class="num">#</th>
+          <th>Shape</th>
+          <th class="num">Accounts</th>
+          <th class="num">Transfers</th>
+          <th class="num">Moved</th>
+          <th class="num">Score</th>
+          <th>Gate</th>
+          <th>Decided</th>
+          <th class="num">Held</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Queue}}
+        <tr id="eq-{{.Rank}}">
+          <td class="num mono">{{.Rank}}</td>
+          <td><span class="shape">{{.Typology}}</span></td>
+          <td class="num mono">{{.Accounts}}</td>
+          <td class="num mono">{{.Txns}}</td>
+          <td class="num mono">{{money .Total}}</td>
+          <td class="num mono">{{f3 .Score}}</td>
+          <td class="small">
+            {{if .Blocks}}<span class="v-pink">can block</span>
+            {{else}}<span class="muted">hold only</span>{{end}}
+          </td>
+          <td class="small">
+            {{if .Decision}}
+              <span class="shape {{actionClass .Decision}}">{{.Decision}}</span>
+              <span class="muted mono">{{short .Source}}</span>
+            {{else}}<span class="muted">&mdash;</span>{{end}}
+          </td>
+          <td class="num mono">{{if gt .Held 0}}{{.Held}}{{else}}<span class="muted">0</span>{{end}}</td>
+          <td class="num">
+            <button class="btn btn-small" onclick="enforceAssess({{.Rank}})">Assess</button>
+          </td>
+        </tr>
+        <tr><td colspan="10" class="small" id="eqout-{{.Rank}}"></td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
 
   <div class="card">
     <div class="row-between">
@@ -143,7 +214,24 @@ async function lift(account) {
   const r = await fetch('/api/holds/lift', {method:'POST', body});
   if (r.ok) location.reload();
 }
-async function verifyHolds() {
+async async function enforceAssess(rank) {
+  const out = document.getElementById('eqout-' + rank);
+  out.textContent = 'assessing…';
+  try {
+    const r = await fetch('/api/enforce/assess/' + rank, {method: 'POST'});
+    const d = await r.json();
+    let msg = d.action + ' (proposed ' + d.proposed + ', confidence ' + d.confidence.toFixed(2)
+            + ', ' + d.source + ', ' + d.took + ') — entry #' + d.auditSeq;
+    msg += d.held > 0 ? ' — held ' + d.held + ' accounts' : ' — held nothing';
+    if (d.adjustments && d.adjustments.length) msg += ' — ' + d.adjustments.join('; ');
+    if (d.heldBounds && d.heldBounds.length) msg += ' — ' + d.heldBounds.join('; ');
+    out.textContent = msg;
+  } catch (e) {
+    out.textContent = 'failed: ' + e;
+  }
+}
+
+function verifyHolds() {
   const r = await fetch('/api/holds/verify', {method:'POST'});
   const d = await r.json();
   const el = document.getElementById('holdverify');

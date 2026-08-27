@@ -35,6 +35,15 @@ import (
 //go:embed templates/*.html assets/*
 var content embed.FS
 
+// The enforcement geometry. Narrow windows decide sooner, and deciding sooner
+// is the whole of what enforcement can buy: docs/FINDINGS.md §13 measures the
+// ceiling on interception at 10.76% of ring value at 72h windows against 31.75%
+// at 24h. Window width is decision latency is the enforcement ceiling.
+const (
+	enforceWindowHours = 24
+	enforceStrideHours = 6
+)
+
 // Server holds the prepared pipeline and serves views over it.
 type Server struct {
 	pool  *pgxpool.Pool
@@ -49,6 +58,13 @@ type Server struct {
 	holds    *enforce.Store
 	register *enforce.Register
 	limits   enforce.Limits
+
+	// enforcer is the second detection geometry. The console runs two passes
+	// for the reason docs/FINDINGS.md §14 measured: a wide window is the better
+	// analyst queue and a narrow one is the better enforcement trigger, and
+	// making one geometry do both means taking the worse half of each. Only
+	// this one leases.
+	enforcer *enforcePass
 
 	ledger     *detect.Ledger
 	candidates []detect.Candidate // held-out only
@@ -74,6 +90,18 @@ type Server struct {
 	mu         sync.RWMutex
 	decided    map[int]agent.Assessment
 	preparedAt time.Time
+}
+
+// enforcePass is a detection geometry with its own fitted ranker, held apart
+// from the analyst queue because it answers a different question: not "what
+// should a person look at today" but "what is safe to act on without one".
+type enforcePass struct {
+	cfg        detect.Config
+	model      *detect.Ranker
+	candidates []detect.Candidate
+	scores     []float64
+	order      []int
+	limits     enforce.Limits
 }
 
 // New builds the server, running the whole pipeline once.
@@ -157,6 +185,10 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	log.Printf("latency: score p50 %s, arrival to decision p50 %s",
 		latency.Short(s.latency.Score.P50), latency.Short(s.latency.Decision.P50))
 
+	if err := s.prepareEnforcer(led, cut); err != nil {
+		return err
+	}
+
 	s.prepareBaseline(led, cut)
 	s.heroPattern, s.heroTxns = s.pickHero()
 	if s.heroPattern == 0 {
@@ -168,6 +200,51 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	s.preparedAt = time.Now()
 	log.Printf("prepared %d candidates in %s", len(all), time.Since(start).Round(time.Millisecond))
 	return nil
+}
+
+// prepareEnforcer runs the narrow geometry and fits its own ranker.
+//
+// A separate ranker rather than the analyst pass's, because the two see
+// different candidate populations: a 24-hour window produces smaller, tighter
+// groups than a 72-hour one, and a model fitted on one is calibrated for the
+// other's distribution. Sharing it would put the enforcing pass's score — the
+// number the block gate reads — on a scale nothing measured.
+func (s *Server) prepareEnforcer(led *detect.Ledger, cut time.Time) error {
+	cfg := s.cfg
+	cfg.WindowHours, cfg.StrideHours = enforceWindowHours, enforceStrideHours
+
+	start := time.Now()
+	all := detect.Detect(led, cfg)
+	train, test := detect.Split(all, cut)
+	if len(train) == 0 || len(test) == 0 {
+		return fmt.Errorf("enforcement pass: %d fitting and %d held-out candidates", len(train), len(test))
+	}
+
+	e := &enforcePass{cfg: cfg, candidates: test}
+	e.model = detect.TrainRanker(train, detect.Labels(led, train),
+		detect.DefaultFeatureSet, score.DefaultTrainOpts())
+	e.scores = e.model.ScoreAll(test)
+	e.order = detect.RankOrder(e.scores)
+
+	e.limits = enforce.DefaultLimits()
+	e.limits.Pass = fmt.Sprintf("%dh/%dh", cfg.WindowHours, cfg.StrideHours)
+	// The lease lasts as long as the window that justified it: a pass that acted
+	// on 24 hours of evidence buys a 24-hour hold, no longer.
+	e.limits.FrozenFor = time.Duration(cfg.WindowHours) * time.Hour
+
+	s.enforcer = e
+	log.Printf("enforcement pass %s: %d candidates, %d held out, fitted in %s",
+		e.limits.Pass, len(all), len(test), time.Since(start).Round(time.Millisecond))
+	return nil
+}
+
+// ringInPass resolves a rank within the enforcement queue.
+func (e *enforcePass) at(rank int) (detect.Candidate, float64, bool) {
+	if rank < 1 || rank > len(e.order) {
+		return detect.Candidate{}, 0, false
+	}
+	idx := e.order[rank-1]
+	return e.candidates[idx], e.scores[idx], true
 }
 
 func (s *Server) Routes() http.Handler {
@@ -182,6 +259,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/audit/tamper/{seq}", s.handleTamper)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /holds", s.handleHolds)
+	mux.HandleFunc("POST /api/enforce/assess/{rank}", s.handleEnforceAssess)
 	mux.HandleFunc("POST /api/holds/lift", s.handleLift)
 	mux.HandleFunc("POST /api/holds/verify", s.handleVerifyHolds)
 	return mux
@@ -507,7 +585,8 @@ func (s *Server) handleAssess(w http.ResponseWriter, r *http.Request) {
 	s.decided[rank] = a
 	s.mu.Unlock()
 
-	held, bounds := s.enforceDecision(r.Context(), rank, a, seq)
+	c, _, _ := s.ringAt(rank)
+	held, bounds := s.enforceDecision(r.Context(), c, a, seq, s.limits, false)
 
 	writeJSON(w, map[string]any{
 		"action":      string(a.Action),
@@ -536,28 +615,42 @@ func (s *Server) evidenceFor(rank int) (agent.Evidence, bool) {
 	if !ok {
 		return agent.Evidence{}, false
 	}
+	return s.evidenceOf(rank, c, sc), true
+}
+
+// enforceRingBase keeps the two passes' ring identifiers apart in the audit log.
+//
+// Both passes rank from 1, so without an offset "ring 3" in the log would mean
+// two different groups of accounts depending on which pass wrote it — and the
+// holds page joins on exactly that number. An ambiguous identifier in a record
+// whose entire purpose is to be unambiguous later is not a cosmetic problem.
+const enforceRingBase = 100000
+
+// evidenceOf renders what the assessor is told about one candidate.
+//
+// Every field is a measured quantity from the detector. There is deliberately
+// no name, reference or memo, so a party under investigation has no channel to
+// address the model judging them.
+func (s *Server) evidenceOf(ringID int, c detect.Candidate, sc float64) agent.Evidence {
 	return agent.Evidence{
-		RingID: rank, Typology: c.Typology,
+		RingID: ringID, Typology: c.Typology,
 		Accounts: c.Features.Accounts, Txns: c.Features.Txns,
 		TotalAmount: c.Features.TotalAmount, MaxAmount: c.Features.MaxAmount,
 		Conservation: c.Features.Conservation, PassThrough: c.Features.PassThroughRatio,
 		SpanHours: c.Features.SpanHours, Score: sc, WindowStart: c.Window,
-	}, true
+	}
 }
 
 // SeedAudit decides the first few alerts at startup so the trail is never empty.
 //
-// An audit page with nothing on it argues against the thing it exists to prove:
-// the claim is that every decision leaves a record, and an empty table reads as
-// no decisions being recorded rather than as none having been made yet. These
-// are real decisions through the real chain, not fixtures — they cost a model
-// call each and they can degrade, which is exactly what should be visible.
-//
-// It seeds only an empty log, so a demo that has already run is never
-// overwritten, and it skips the ring the console opens on: assessing that one
-// live, in front of an audience, is the point of the front page.
-func (s *Server) SeedAudit(ctx context.Context, n int) {
-	if n <= 0 {
+// It seeds from both passes, and the split is the architecture rather than a
+// convenience. The analyst pass produces decisions and no holds — that is what
+// the wide geometry is for, and a console where every recorded decision also
+// seized money would misrepresent the system. The enforcement pass produces the
+// holds. Someone reading the audit page and the holds page side by side should
+// be able to see that they are not the same list, and why.
+func (s *Server) SeedAudit(ctx context.Context, analyst, enforcing int) {
+	if analyst <= 0 && enforcing <= 0 {
 		return
 	}
 	have, err := s.log.Count(ctx)
@@ -570,14 +663,17 @@ func (s *Server) SeedAudit(ctx context.Context, n int) {
 		return
 	}
 
+	// The hero case is left undecided so the live assessment in the demo has
+	// something to decide.
 	skip := 0
 	if s.heroPattern != 0 {
 		skip, _ = s.findCovering(s.heroTxns)
 	}
 
 	start := time.Now()
-	seeded := 0
-	for rank := 1; rank <= len(s.order) && seeded < n; rank++ {
+	seeded, held := 0, 0
+
+	for rank := 1; rank <= len(s.order) && seeded < analyst; rank++ {
 		if rank == skip {
 			continue
 		}
@@ -588,23 +684,44 @@ func (s *Server) SeedAudit(ctx context.Context, n int) {
 		a := s.chain.Assess(ctx, ev)
 		seq, _, err := s.log.Record(ctx, ev, a)
 		if err != nil {
-			log.Printf("seed: record ring %d: %v", rank, err)
+			log.Printf("seed: record analyst ring %d: %v", rank, err)
 			return
 		}
 		s.mu.Lock()
 		s.decided[rank] = a
 		s.mu.Unlock()
 
+		c, _, _ := s.ringAt(rank)
+		s.enforceDecision(ctx, c, a, seq, s.limits, false)
+		seeded++
+	}
+
+	for rank := 1; rank <= len(s.enforcer.order) && rank <= enforcing; rank++ {
+		c, sc, ok := s.enforcer.at(rank)
+		if !ok {
+			continue
+		}
+		ev := s.evidenceOf(enforceRingBase+rank, c, sc)
+		a := s.chain.Assess(ctx, ev)
+		seq, _, err := s.log.Record(ctx, ev, a)
+		if err != nil {
+			log.Printf("seed: record enforcement ring %d: %v", rank, err)
+			return
+		}
 		// A seeded decision enforces exactly as a live one does. Recording the
 		// decision but skipping its consequence would make the holds page a
 		// different kind of thing from the audit page — a display rather than a
 		// record of what the system actually did.
-		if held, _ := s.enforceDecision(ctx, rank, a, seq); held > 0 {
-			log.Printf("seed: ring %d held %d accounts on decision %d", rank, held, seq)
+		n, _ := s.enforceDecision(ctx, c, a, seq, s.enforcer.limits, true)
+		if n > 0 {
+			log.Printf("seed: enforcement rank %d held %d accounts on decision %d", rank, n, seq)
 		}
+		held += n
 		seeded++
 	}
-	log.Printf("seed: %d decisions recorded in %s", seeded, time.Since(start).Round(time.Millisecond))
+
+	log.Printf("seed: %d decisions recorded (%d accounts held) in %s",
+		seeded, held, time.Since(start).Round(time.Millisecond))
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {

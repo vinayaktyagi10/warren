@@ -6,10 +6,12 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/vinayaktyagi10/warren/internal/agent"
+	"github.com/vinayaktyagi10/warren/internal/detect"
 	"github.com/vinayaktyagi10/warren/internal/enforce"
 )
 
@@ -22,12 +24,25 @@ import (
 // be named is one this system will not place, and doing it in this order is what
 // makes that true rather than merely intended: if the log write fails, nothing
 // is held.
-func (s *Server) enforceDecision(ctx context.Context, rank int, a agent.Assessment, decisionSeq int64) (int, []string) {
-	c, _, ok := s.ringAt(rank)
-	if !ok {
-		return 0, nil
+//
+// `enforcing` is which pass the ring came from, and it is a policy input rather
+// than a detail. Only the narrow geometry leases. The wide pass feeds the
+// analyst queue and holds nothing, because letting it lease was measured at
+// +8.4% innocent money held for +1.9% of the laundering value — see
+// docs/FINDINGS.md §14. A decision made on a wide-pass alert is still recorded
+// in full; it simply does not touch anyone's money without a person.
+func (s *Server) enforceDecision(ctx context.Context, c detect.Candidate,
+	a agent.Assessment, decisionSeq int64, lim enforce.Limits, enforcing bool) (int, []string) {
+
+	leases, bounds := enforce.Restrictions(a, c, time.Now().UTC(), lim)
+	if !enforcing {
+		if len(leases) > 0 {
+			bounds = append(bounds, fmt.Sprintf(
+				"no hold placed: the %s pass feeds the analyst queue and does not lease; "+
+					"enforcement runs on the %s pass", lim.Pass, s.enforcer.limits.Pass))
+		}
+		return 0, bounds
 	}
-	leases, bounds := enforce.Restrictions(a, c, time.Now().UTC(), s.limits)
 	if len(leases) == 0 {
 		return 0, bounds
 	}
@@ -78,6 +93,117 @@ type holdView struct {
 	// but "these accounts are having their money held on an authority that no
 	// longer checks out".
 	Orphaned bool
+}
+
+// enforceView is one alert from the pass that may act, with everything the
+// block gate reads, so a page showing no freezes shows why on the same row.
+type enforceView struct {
+	Rank       int
+	Score      float64
+	Typology   string
+	Accounts   int
+	Txns       int
+	Total      float64
+	Decision   string
+	Proposed   string
+	Confidence float64
+	Source     string
+	Held       int
+	Blocks     bool // the ranker score clears the block gate
+}
+
+// enforcementQueue renders the top of the narrow pass, joined to whatever the
+// system has already decided about each entry.
+func (s *Server) enforcementQueue(ctx context.Context, limit int) []enforceView {
+	decided := map[int]auditRow{}
+	rows, err := s.pool.Query(ctx,
+		`SELECT ring_id, action, proposed, confidence, source FROM audit_log WHERE ring_id >= $1`,
+		enforceRingBase)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var d auditRow
+			var ring int
+			if err := rows.Scan(&ring, &d.action, &d.proposed, &d.confidence, &d.source); err != nil {
+				break
+			}
+			decided[ring-enforceRingBase] = d
+		}
+	}
+
+	held := map[int]int{}
+	if events, err := s.holds.Events(ctx); err == nil {
+		for _, e := range events {
+			if e.Event == enforce.EventImpose && e.RingID >= enforceRingBase {
+				held[e.RingID-enforceRingBase]++
+			}
+		}
+	}
+
+	policy := s.chain.Policy
+	out := make([]enforceView, 0, limit)
+	for rank := 1; rank <= limit; rank++ {
+		c, sc, ok := s.enforcer.at(rank)
+		if !ok {
+			break
+		}
+		v := enforceView{
+			Rank: rank, Score: sc, Typology: c.Typology,
+			Accounts: c.Features.Accounts, Txns: c.Features.Txns,
+			Total:  c.Features.TotalAmount,
+			Held:   held[rank],
+			Blocks: sc >= policy.BlockMinScore && c.Features.TotalAmount <= policy.BlockMaxAmount,
+		}
+		if d, ok := decided[rank]; ok {
+			v.Decision, v.Proposed, v.Confidence, v.Source = d.action, d.proposed, d.confidence, d.source
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+type auditRow struct {
+	action, proposed, source string
+	confidence               float64
+}
+
+// handleEnforceAssess decides one alert from the pass that may act.
+//
+// It is a separate route from the analyst one rather than a flag on it, because
+// the two differ in the only way that matters: this one can take someone's
+// money. A single endpoint with a boolean would put that distinction in a
+// parameter, where it is one typo away from being wrong.
+func (s *Server) handleEnforceAssess(w http.ResponseWriter, r *http.Request) {
+	rank, err := strconv.Atoi(r.PathValue("rank"))
+	if err != nil {
+		http.Error(w, "bad rank", http.StatusBadRequest)
+		return
+	}
+	c, sc, ok := s.enforcer.at(rank)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	start := time.Now()
+	ev := s.evidenceOf(enforceRingBase+rank, c, sc)
+	a := s.chain.Assess(r.Context(), ev)
+	seq, hash, err := s.log.Record(r.Context(), ev, a)
+	if err != nil {
+		http.Error(w, "record: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	held, bounds := s.enforceDecision(r.Context(), c, a, seq, s.enforcer.limits, true)
+
+	writeJSON(w, map[string]any{
+		"action": string(a.Action), "proposed": string(a.Proposed),
+		"adjusted": a.Adjusted(), "confidence": a.Confidence,
+		"rationale": a.Rationale, "source": a.Source, "adjustments": a.Adjustments,
+		"actionClass": actionClass(string(a.Action)),
+		"held":        held, "heldBounds": bounds,
+		"auditSeq": seq, "auditHash": hash,
+		"took": time.Since(start).Round(time.Millisecond).String(),
+	})
 }
 
 func (s *Server) handleHolds(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +272,11 @@ func (s *Server) handleHolds(w http.ResponseWriter, r *http.Request) {
 		"Orphaned": orphaned,
 		"Events":   len(events),
 		"Verify":   verify,
-		"Limits":   s.limits,
+		"Limits":   s.enforcer.limits,
+		"Queue":    s.enforcementQueue(r.Context(), 12),
+		"Policy":   s.chain.Policy,
+		"Analyst":  s.limits.Pass,
+		"Enforcer": s.enforcer.limits.Pass,
 		"Why":      why,
 	})
 }

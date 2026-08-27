@@ -99,29 +99,60 @@ func reportOrphanedHolds(ctx context.Context, pool *pgxpool.Pool, brokenSeq int6
 	if err != nil {
 		return
 	}
-	var orphaned []enforce.Held
+	// Both tiers count. A freeze is the urgent case — someone's transfers are
+	// being stopped right now — but a watch recorded against a person on an
+	// authority that no longer verifies is still a restriction with no
+	// justification behind it, and reporting only freezes made this command
+	// disagree with the console, which counts both. Two views of the same fact
+	// that disagree are worse than either view alone.
+	var frozen, watched []enforce.Held
 	for _, h := range held {
-		if h.Tier == enforce.TierFrozen && !h.Expired &&
-			h.DecisionSeq != nil && *h.DecisionSeq >= brokenSeq {
-			orphaned = append(orphaned, h)
+		if h.Expired || h.DecisionSeq == nil || *h.DecisionSeq < brokenSeq {
+			continue
+		}
+		if h.Tier == enforce.TierFrozen {
+			frozen = append(frozen, h)
+		} else {
+			watched = append(watched, h)
 		}
 	}
-	if len(orphaned) == 0 {
+	if len(frozen)+len(watched) == 0 {
 		return
 	}
-	sort.Slice(orphaned, func(i, j int) bool { return orphaned[i].Account < orphaned[j].Account })
+	byAccount := func(x []enforce.Held) {
+		sort.Slice(x, func(i, j int) bool { return x[i].Account < x[j].Account })
+	}
+	byAccount(frozen)
+	byAccount(watched)
 
-	fmt.Printf("\n%d accounts are currently frozen on the authority of entry %d or later:\n\n",
-		len(orphaned), brokenSeq)
-	for i, h := range orphaned {
-		if i == 5 {
-			fmt.Printf("  ... and %d more\n", len(orphaned)-5)
+	switch {
+	case len(frozen) > 0 && len(watched) > 0:
+		fmt.Printf("\n%d accounts are frozen and %d watched on the authority of entry %d or later:\n\n",
+			len(frozen), len(watched), brokenSeq)
+	case len(frozen) > 0:
+		fmt.Printf("\n%d accounts are currently frozen on the authority of entry %d or later:\n\n",
+			len(frozen), brokenSeq)
+	default:
+		fmt.Printf("\n%d accounts are under a watch placed on the authority of entry %d or later:\n\n",
+			len(watched), brokenSeq)
+	}
+
+	// Freezes first: they are the ones stopping money.
+	shown := 0
+	for _, h := range append(append([]enforce.Held(nil), frozen...), watched...) {
+		if shown == 6 {
+			fmt.Printf("  ... and %d more\n", len(frozen)+len(watched)-6)
 			break
 		}
-		fmt.Printf("  %-24s ring %-5d expires %s  (decision %d)\n",
-			h.Account, h.RingID, h.ExpiresAt.Format("2006-01-02 15:04"), *h.DecisionSeq)
+		fmt.Printf("  %-24s %-7s ring %-5d expires %s  (decision %d)\n",
+			h.Account, h.Tier, h.RingID, h.ExpiresAt.Format("2006-01-02 15:04"), *h.DecisionSeq)
+		shown++
 	}
-	fmt.Printf("\nthese holds no longer have a verifiable authority behind them.\n")
+
+	fmt.Printf("\nthese restrictions no longer have a verifiable authority behind them.\n")
+	if len(frozen) > 0 {
+		fmt.Printf("%d of them are stopping transfers right now.\n", len(frozen))
+	}
 }
 
 // list prints the log newest first, which is the order someone investigating a

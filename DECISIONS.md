@@ -552,3 +552,33 @@ enough that the flag exists and both tables are published rather than one.
 rejected; it would mean quietly regressing the two weakest shapes while
 advertising an improvement.
 **My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — The console runs both geometries; only the narrow one leases
+**Chose:** the console runs a 72h/24h analyst pass and a 24h/6h enforcement pass
+with its own fitted ranker, and `enforceDecision` takes which pass a ring came
+from as an argument. The wide pass records decisions and places no holds.
+**Why:** §14 measured that letting the wide pass lease costs +8.4% more innocent
+money held for +1.9% of the laundering value, and the console was doing exactly
+that. A documented finding contradicted by the demo is worse than no finding,
+because the demo is what people look at. A separate ranker rather than a shared
+one, because a 24-hour window produces a different candidate population than a
+72-hour one and a model fitted on one puts the other's scores — the number the
+block gate reads — on a scale nothing measured.
+**Alternative considered:** merge both passes into one queue labelled by
+geometry — rejected, the quoted precision at 50 alerts describes the wide pass,
+and a queue showing something else invites the obvious question. A boolean on
+the existing assess endpoint — rejected, the two differ in whether they can take
+someone's money, and that belongs in the route rather than in a parameter one
+typo away from being wrong.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Namespace ring ids across the two passes
+**Chose:** enforcement-pass rings are recorded at `100000 + rank`.
+**Why:** both passes rank from 1, so "ring 3" in the audit log would name two
+different groups of accounts depending on which pass wrote it — and the holds
+page joins on exactly that number. An ambiguous identifier inside a record whose
+whole purpose is to be unambiguous later is not cosmetic.
+**Alternative considered:** a pass column on `audit_log` — better normalised,
+but it changes what the hash covers and invalidates every entry already written,
+which §"two hash chains" already refused once for the same reason.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.

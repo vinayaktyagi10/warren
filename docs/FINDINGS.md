@@ -855,3 +855,60 @@ coverage.
 **The finding is the negative coefficient, not the table.** It is a measured
 statement that on this data the unsupervised anomaly half of the recommended
 architecture points the wrong way, and a mechanical reason why.
+
+---
+
+# 18. The console runs both geometries, and the freeze path turns out to be reachable
+
+§14 measured that a 72h/24h pass is the better analyst queue and a 24h/6h pass is
+the better enforcement trigger, and that letting the wide pass lease as well costs
++8.4% more innocent money held for +1.9% of the laundering value. The console did
+not implement that. It ran one geometry, 72h/24h, and leased from it — the pass
+the measurement says should not lease. The finding and the demo disagreed, and
+the demo was the thing anyone would actually look at.
+
+The console now runs both. The wide pass feeds the queue a person works and holds
+nothing whatever it decides; the narrow pass is the only one with authority to
+lease, and the holds page shows its queue with everything the block gate reads on
+each row. A decision made on a wide-pass alert is still recorded in full — it
+simply cannot touch anyone's money without a person.
+
+## The correction this forced
+
+The project has been claiming, correctly at the time, that **the freeze path is
+unreachable on the console's own queue**: every high-scoring ring the 72h pass
+raises moves 17.7m to 862m against a 10m autonomous ceiling, so the policy
+withholds every block on value, and `-block-ceiling` existed to exercise the path
+at all.
+
+That is a property of the *wide* geometry, not of the system. The narrow pass's
+top-ranked rings move **60.7k to 5.8M** — comfortably inside the real ceiling —
+because a 24-hour window produces small tight groups where a 72-hour window
+accumulates large ones. Measured on the enforcement queue at the **unchanged
+default 10m ceiling**, with the live model:
+
+```
+rank 1  hold_for_review  conf 0.85   4 accounts watched
+rank 2  block            conf 0.92   5 accounts frozen
+rank 3  block            conf 0.92   3 accounts frozen
+rank 4  hold_for_review  conf 0.85   3 accounts watched
+rank 5  block            conf 0.95   8 accounts frozen
+rank 6  hold_for_review  conf 0.85   9 accounts watched
+```
+
+Three autonomous blocks, sixteen accounts frozen, no flag raised and no limit
+moved. `gemini-3.7-flash` returned 503 or 504 on every one of them and
+`gemini-3.5-flash-lite` answered, so the degradation chain is in the record
+beside each decision. Both hash chains verify afterwards.
+
+**So the geometry split bought a second thing nobody was looking for.** It was
+built to raise interception, and §14 measured that at 31 rings and 12.26m
+stopped. It also made autonomous blocking reachable inside the real policy
+envelope, by changing the size of the groups the system decides about. Window
+width sets decision latency, decision latency sets the interception ceiling —
+and it turns out window width also sets how much money is on the table in any
+one decision, which is what the value ceiling gates on.
+
+`-block-ceiling` stays, and stays a demonstration setting that logs loudly. It is
+now only needed to make the *analyst* pass block, which is not something anyone
+should want.

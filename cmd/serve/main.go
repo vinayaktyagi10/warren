@@ -31,7 +31,11 @@ func main() {
 		"run with no model at all, deciding on the deterministic fallback")
 	trainFraction := flag.Float64("train-fraction", 0.7, "share of the active period used to fit the ranker")
 	seed := flag.Int("seed-decisions", 4,
-		"decide this many top alerts at startup when the audit log is empty; 0 disables")
+		"decide this many top analyst-queue alerts at startup when the audit log is\n"+
+			"empty; these are recorded and place no holds. 0 disables")
+	seedEnforce := flag.Int("seed-enforcement", 4,
+		"decide this many top alerts from the narrow enforcement pass at startup;\n"+
+			"these are the ones that can lease. 0 disables")
 	blockCeiling := flag.Float64("block-ceiling", agent.DefaultPolicy().BlockMaxAmount,
 		"largest total a ring may move and still be blocked without a person; every\n"+
 			"high-scoring ring in the IBM AML ledger moves far more than the real-world\n"+
@@ -67,7 +71,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("prepare: %v", err)
 	}
-	srv.SeedAudit(ctx, *seed)
+	srv.SeedAudit(ctx, *seed, *seedEnforce)
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
