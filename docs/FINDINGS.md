@@ -677,3 +677,92 @@ hour slightly lowers suspicion here. It is kept, unweighted and unhidden, on the
 same principle as `density` and `span_hours`: a feature the fit rejects is
 evidence about the data, and removing it would leave only the features that
 happened to work.
+
+---
+
+# 16. The suspect registry: what a graph adds to a list
+
+India's I4C operates a shared mule-account registry — 32.08 lakh accounts, against
+which ₹25,698 crore of transfers have been declined. It is the closest thing in
+production to a national version of what this project does, and it is a *list*:
+a per-account control that stops payments to accounts on it.
+
+What a list cannot do is say anything about the accounts *around* the ones on
+it. A ring is built so that most of its accounts have never been reported by
+anyone, because most of them never touched a victim — a mule in the middle of a
+layering chain has nobody to complain about it. So the question worth asking is
+not "does a registry help", which is obviously yes, but: **how many further
+accounts does each reported account implicate, once you have a graph?**
+
+## Simulating it, and what that costs
+
+No public dataset ships a mule registry alongside a labelled ledger, so this one
+is generated from the labels. That is a real limitation and worth being precise
+about: the registry knows which accounts laundered, so a feature built on it is
+partly reading the answer.
+
+Three properties keep it from being a fantasy. A real registry is **partial** —
+victims report a fraction of the mules. It is **late** — an account is reported
+days after it moved money, here drawn per account from an exponential
+distribution, because a fixed lag is a constant the detector could learn. And it
+is **wrong** sometimes — 5% of the list never laundered.
+
+The timing discipline is enforced rather than intended. `ListedAt` takes the
+instant being asked about, and a candidate is scored against the moment *its
+window closed*, never against the state of the list today. Without that the
+feature would be reading reports filed after the decision it is meant to inform,
+which is the same class of error as §3's quiet tail.
+
+**What still cannot be claimed:** this measures a registry with the stated
+properties on this ledger. It does not measure I4C's registry, whose coverage
+and latency are not public. And the simulation's coverage is uniform over
+laundering accounts, which is *more generous than reality* — a real list is
+biased toward first-hop mules that touched a victim, and would rarely name the
+chain-interior accounts this one names freely.
+
+## The control that decides whether any of it means anything
+
+Ranking by the list alone, with no graph at all. If that scores close to the
+fused model, the graph is decoration.
+
+| coverage | listed | fused @50 | list only @50 | fused @1k | list only @1k | implicated | per listed |
+|---------:|-------:|:----------|:--------------|:----------|:--------------|-----------:|-----------:|
+| 5% | 91 | **34** / 0.190 | 5 / 0.126 | **115** / 0.038 | 54 / 0.021 | 162 | **1.78** |
+| 10% | 205 | **18** / 0.272 | 5 / 0.107 | **120** / 0.041 | 79 / 0.036 | 294 | **1.43** |
+| 20% | 387 | **44** / 0.340 | 20 / 0.175 | **139** / 0.044 | 92 / 0.045 | 326 | **0.84** |
+| 30% | 575 | **21** / 0.407 | 20 / 0.267 | **143** / 0.048 | 118 / 0.061 | 406 | **0.71** |
+| 50% | 989 | **41** / 0.453 | 34 / 0.391 | **153** / 0.057 | 142 / 0.080 | 381 | **0.39** |
+
+Rings found / transaction-level precision. Amplification measured at 1,000 alerts.
+
+Three things it says, one of them unflattering.
+
+**The graph beats the list alone at every coverage.** At 5% coverage — the
+realistic end, since real registries are thin — the fused ranker finds 34 rings
+in its first 50 alerts against the list's 5, and 115 against 54 at a thousand.
+
+**The graph is worth most exactly where the list is thinnest.** Amplification
+runs 1.78 accounts implicated per account listed at 5% coverage down to 0.39 at
+50%. That is not a defect, it is arithmetic: the more the list already names, the
+fewer accounts are left to implicate. It also means the number to quote is the
+one at low coverage, because that is the regime a real registry lives in.
+
+**At a rich list and a loose budget the list wins on precision.** At 50% coverage
+and 1,000 alerts the list alone reaches 0.080 against the fused model's 0.057,
+even though the fused model finds 153 rings to its 142. The fused model surfaces
+more rings by raising larger candidates, and pays for it per transfer. If a bank
+already had half of all mules on a list, a graph would be adding reach, not
+precision.
+
+## What is deliberately not claimed
+
+The @50 column is noisy — 34, 18, 44, 21, 41 as coverage rises — because each row
+draws a *different* registry, and at 50 alerts out of 182 rings the sample is
+small enough that which accounts were drawn matters more than how many. The
+@1,000 column is monotone (115, 120, 139, 143, 153) and is the one to read. Both
+are shown rather than only the tidy one.
+
+**The registry stays off by default.** `-registry` is a measured optional
+capability, not part of the shipped configuration, because the list is simulated
+and quoting a simulated-registry precision as this system's headline would be
+exactly the kind of number this project keeps throwing away.

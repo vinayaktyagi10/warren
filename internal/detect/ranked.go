@@ -110,11 +110,7 @@ func EvaluateRanked(led *Ledger, candidates []Candidate, scores []float64, budge
 // EvaluateRankedByShape is EvaluateRanked with recall broken out per ring shape.
 func EvaluateRankedByShape(led *Ledger, candidates []Candidate, scores []float64,
 	budgets []int, typologies map[int32]string) *RankedReport {
-	order := make([]int, len(candidates))
-	for i := range order {
-		order[i] = i
-	}
-	sort.Slice(order, func(a, b int) bool { return scores[order[a]] > scores[order[b]] })
+	order := RankOrder(scores)
 
 	// Ground truth restricted to the transfers present in this split.
 	ringTxns := make(map[int32]map[int32]bool)
@@ -243,6 +239,28 @@ func (r *RankedReport) String() string {
 			row.TopK, row.RingsFound, row.TotalRings, p, rc, f1(p, rc), row.FPValue)
 	}
 	return b.String()
+}
+
+// RankOrder returns candidate indices most suspicious first.
+//
+// Ties break by position rather than arbitrarily. Equal scores are common — a
+// feature that is zero for nearly every candidate, such as the share of its
+// accounts on a suspect list, produces long blocks of them — and an unstable
+// sort resolves such a block differently per run. The alert budget then cuts
+// the block in a different place each time, and the same pipeline reports
+// several answers to the same question.
+func RankOrder(scores []float64) []int {
+	order := make([]int, len(scores))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		if scores[order[a]] != scores[order[b]] {
+			return scores[order[a]] > scores[order[b]]
+		}
+		return order[a] < order[b]
+	})
+	return order
 }
 
 // Ranker is a fitted model bound to the feature set it was fitted on.

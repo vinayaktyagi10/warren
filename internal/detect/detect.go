@@ -134,6 +134,13 @@ type Features struct {
 	Burstiness   float64
 	MaxHourShare float64
 	FastForward  float64
+
+	// RegistryShare is the fraction of the group's accounts already on a
+	// suspect-account list when this window closed. Filled by
+	// internal/registry, not by the detector — detection stays independent of
+	// whether a list exists, so the with-and-without comparison is a matter of
+	// not annotating rather than of running a different detector.
+	RegistryShare float64
 }
 
 // Ledger is the working set: filtered transfers plus the account index.
@@ -350,9 +357,22 @@ func detectWindow(txns []Txn, cfg Config, windowStart time.Time) []Candidate {
 		members[root] = append(members[root], t)
 	}
 
+	// Iterate the components in a fixed order. Ranging over the map directly
+	// made the candidate list — and therefore the fitting set, the float
+	// summation order inside the fit, and the resolution of every score tie in
+	// the alert queue — depend on Go's map seed. Runs differed by a few rings
+	// at a given budget, which is small enough to look like noise and is in
+	// fact the same pipeline reporting two answers. A project whose whole claim
+	// is that its numbers were measured cannot have that.
+	roots := make([]int32, 0, len(members))
+	for r := range members {
+		roots = append(roots, r)
+	}
+	sort.Slice(roots, func(i, j int) bool { return roots[i] < roots[j] })
+
 	var out []Candidate
-	for _, group := range members {
-		c, ok := summarise(group, cfg, windowStart)
+	for _, r := range roots {
+		c, ok := summarise(members[r], cfg, windowStart)
 		if ok {
 			out = append(out, c)
 		}
@@ -421,6 +441,12 @@ const (
 	// time. It extends the base set rather than reordering it, so a
 	// coefficient means the same thing under either.
 	FeatureSetTemporal FeatureSet = "temporal"
+
+	// FeatureSetRegistry adds the share of the group's accounts already on a
+	// suspect-account list. It needs internal/registry to have annotated the
+	// candidates; without that the feature is a constant zero and the
+	// standardiser will say so.
+	FeatureSetRegistry FeatureSet = "registry"
 )
 
 // DefaultFeatureSet is what the console and the shipped defaults use.
@@ -438,6 +464,9 @@ func init() {
 	featureNames[FeatureSetTemporal] = append(
 		append([]string(nil), featureNames[FeatureSetBase]...),
 		"burstiness", "max_hour_share", "fast_forward")
+	featureNames[FeatureSetRegistry] = append(
+		append([]string(nil), featureNames[FeatureSetTemporal]...),
+		"registry_share")
 }
 
 // FeatureNamesFor labels the coefficients of a model fitted on the given set.
@@ -470,7 +499,11 @@ func (f Features) VectorFor(set FeatureSet) []float64 {
 	if set == FeatureSetBase {
 		return base
 	}
-	return append(base, f.Burstiness, f.MaxHourShare, f.FastForward)
+	v := append(base, f.Burstiness, f.MaxHourShare, f.FastForward)
+	if set == FeatureSetRegistry {
+		v = append(v, f.RegistryShare)
+	}
+	return v
 }
 
 // Vector renders the default feature set.

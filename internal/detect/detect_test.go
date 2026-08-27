@@ -425,3 +425,52 @@ func TestLabelsMarkCandidatesTouchingALabelledRing(t *testing.T) {
 		}
 	}
 }
+
+// Two runs of the same pipeline on the same ledger must give the same answer.
+//
+// They did not. detectWindow ranged over a map of components, so the candidate
+// order — and with it the fitting set, the float summation order inside the
+// fit, and the resolution of every score tie in the alert queue — depended on
+// Go's map seed. Runs differed by a few rings at a given budget: small enough
+// to read as noise, and in fact the same pipeline giving two answers.
+func TestDetectionIsReproducible(t *testing.T) {
+	var txns []Txn
+	id := int32(1)
+	for group := int32(0); group < 40; group++ {
+		base := group*10 + 100
+		for i := 0; i < 5; i++ {
+			txns = append(txns, tx(id, float64(group)+float64(i)*0.5,
+				base+int32(i), base+int32(i)+1, 1000+float64(i)))
+			id++
+		}
+	}
+	led := ledgerOf(txns...)
+
+	first := Detect(led, testConfig())
+	for run := 0; run < 5; run++ {
+		got := Detect(led, testConfig())
+		if len(got) != len(first) {
+			t.Fatalf("run %d found %d candidates, the first found %d", run, len(got), len(first))
+		}
+		for i := range got {
+			if candidateKey(got[i].TxnIDs) != candidateKey(first[i].TxnIDs) {
+				t.Fatalf("run %d: candidate %d differs from the first run", run, i)
+			}
+		}
+	}
+}
+
+// Equal scores must resolve the same way every time, or the alert budget cuts
+// an equal-scoring block in a different place per run.
+func TestRankOrderBreaksTiesByPosition(t *testing.T) {
+	scores := []float64{0.5, 0.9, 0.5, 0.9, 0.1}
+	want := []int{1, 3, 0, 2, 4}
+	for run := 0; run < 5; run++ {
+		got := RankOrder(scores)
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("run %d: order %v, want %v", run, got, want)
+			}
+		}
+	}
+}

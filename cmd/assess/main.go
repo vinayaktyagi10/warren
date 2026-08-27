@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -58,11 +57,7 @@ func main() {
 	log.Printf("detected %d candidates, ranking %d held-out", len(candidates), len(test))
 
 	scores := model2.ScoreAll(test)
-	order := make([]int, len(test))
-	for i := range order {
-		order[i] = i
-	}
-	sort.Slice(order, func(a, b int) bool { return scores[order[a]] > scores[order[b]] })
+	order := detect.RankOrder(scores)
 
 	auditLog, err := audit.New(ctx, pool)
 	if err != nil {

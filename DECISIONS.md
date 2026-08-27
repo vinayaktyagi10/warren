@@ -470,3 +470,52 @@ choosing the budget after seeing the numbers is how a flattering one gets
 picked. Every budget carries the breakdown; `-shape-budget` only selects which
 is printed.
 **My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Simulate the suspect registry, and measure the graph against it
+**Chose:** `internal/registry` generates an I4C-style mule list from the labels
+with partial coverage, an exponential reporting delay and a false-report rate,
+exposes it as one candidate feature, and ships a control that ranks by the list
+alone.
+**Why:** the interesting claim is not "a registry helps" — it obviously does —
+but that a graph turns each reported account into several implicated ones, which
+is this project's whole thesis in the language of a stated national priority. So
+the measurement is amplification: laundering accounts surfaced *excluding the
+ones the list already named*, because counting those is counting the input as
+output. The control is the part that makes it falsifiable: ranking by the list
+alone finds 5 rings in 50 alerts at realistic coverage against the fused model's
+34.
+**Alternative considered:** ingest a real registry — none exists publicly
+alongside a labelled ledger. Seeding the registry from the detector's own past
+alerts — rejected, it would make the feature a memory of the detector's own
+output and every number circular. Reporting only the fused result — rejected,
+without the list-only control the number is unfalsifiable.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — The registry stays off by default
+**Chose:** `-registry` is opt-in; the shipped configuration is the temporal set.
+**Why:** the list is simulated from the labels, and its precision at 50 alerts —
+40.7% at 30% coverage against 14.3% without — is by far the best number in this
+project. Quoting it as the headline would be quoting a number produced by
+telling the detector part of the answer. It is a measured capability with its
+sensitivity curve published, which is a different claim from a result.
+**Alternative considered:** default it on and caveat the number — rejected, the
+caveat never travels as far as the number.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Fix the reproducibility hole the registry exposed
+**Chose:** components are iterated in sorted order rather than straight off a
+map, and every score ordering goes through one `detect.RankOrder` that breaks
+ties by position.
+**Why:** two runs of the same command on the same ledger gave different answers —
+21 rings at 50 alerts on one run, 24 on the next. `detectWindow` ranged over a
+map of components, so candidate order followed Go's map seed, and with it the
+fitting set, the float summation order inside the fit, and the resolution of
+every score tie. It had gone unnoticed because the published feature sets happen
+to produce few ties; the registry feature is zero for nearly every candidate and
+produces long blocks of them, which is what surfaced it. A project whose entire
+claim is that its numbers were measured cannot have the same pipeline reporting
+two answers.
+**Alternative considered:** seed the map iteration — not a thing Go offers.
+Accept it as noise and quote a range — rejected, it is not noise, it is
+non-determinism, and the fix is fifteen lines.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.

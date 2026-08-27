@@ -147,11 +147,7 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 		detect.DefaultFeatureSet, score.DefaultTrainOpts())
 	s.candidates = test
 	s.scores = s.model.ScoreAll(test)
-	s.order = make([]int, len(test))
-	for i := range s.order {
-		s.order[i] = i
-	}
-	sort.Slice(s.order, func(a, b int) bool { return s.scores[s.order[a]] > s.scores[s.order[b]] })
+	s.order = detect.RankOrder(s.scores)
 
 	s.report = detect.Evaluate(led, all, s.typologies)
 	s.ranked = detect.EvaluateRanked(led, test, s.scores,

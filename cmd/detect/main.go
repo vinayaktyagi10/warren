@@ -14,6 +14,7 @@ import (
 
 	"github.com/vinayaktyagi10/warren/internal/db"
 	"github.com/vinayaktyagi10/warren/internal/detect"
+	"github.com/vinayaktyagi10/warren/internal/registry"
 	"github.com/vinayaktyagi10/warren/internal/score"
 )
 
@@ -36,6 +37,16 @@ func main() {
 		"which feature set the ranker sees: \"base\" for the nine shape-and-money\n"+
 			"features, \"temporal\" to add burstiness, hour concentration and\n"+
 			"forwarding speed. Run both to measure what the temporal ones are worth.")
+	withRegistry := flag.Bool("registry", false,
+		"simulate a shared suspect-account list (I4C-style) and give the ranker the\n"+
+			"share of each group's accounts already on it. Implies -features registry.")
+	regCoverage := flag.Float64("registry-coverage", registry.DefaultSimOpts().Coverage,
+		"share of laundering accounts the simulated list ever names")
+	regDelay := flag.Duration("registry-delay", registry.DefaultSimOpts().ReportDelay,
+		"mean lag between an account moving money and appearing on the list")
+	regFalse := flag.Float64("registry-false-rate", registry.DefaultSimOpts().FalseRate,
+		"share of the simulated list that never laundered")
+	regSeed := flag.Int64("registry-seed", registry.DefaultSimOpts().Seed, "registry simulation seed")
 	shapeBudget := flag.Int("shape-budget", 1000,
 		"alert budget at which to break recall out by ring shape")
 	trimTail := flag.Bool("trim-tail", true,
@@ -81,6 +92,20 @@ func main() {
 	detectWall := time.Since(start)
 	log.Printf("detected %d candidate rings in %s", len(candidates), detectWall.Round(time.Millisecond))
 
+	var reg *registry.Registry
+	set := detect.FeatureSet(*features)
+	if *withRegistry {
+		reg = registry.Simulate(led, registry.SimOpts{
+			Coverage: *regCoverage, ReportDelay: *regDelay,
+			FalseRate: *regFalse, Seed: *regSeed,
+		})
+		set = detect.FeatureSetRegistry
+		log.Printf("simulated suspect registry: %d accounts listed, %.0f%% coverage, "+
+			"%s mean reporting delay, %.0f%% false reports",
+			reg.Size(), 100**regCoverage, *regDelay, 100**regFalse)
+	}
+	registry.Annotate(candidates, reg)
+
 	if *analyse {
 		fmt.Print("\n", detect.AnalyseFeatures(led, candidates))
 	}
@@ -104,7 +129,7 @@ func main() {
 	log.Printf("split at %s: %d train candidates (%d bearing a ring), %d held out (%d bearing a ring)",
 		cut.Format("2006-01-02 15:04"), len(train), pos, len(test), countTrue(testLabels))
 
-	ranker := detect.TrainRanker(train, trainLabels, detect.FeatureSet(*features), score.DefaultTrainOpts())
+	ranker := detect.TrainRanker(train, trainLabels, set, score.DefaultTrainOpts())
 	fmt.Printf("\nfeature set: %s\n%s", ranker.Set, ranker.Explain())
 
 	scores := ranker.ScoreAll(test)
@@ -114,6 +139,31 @@ func main() {
 	fmt.Print("\n=== ranked on held-out data, by alert budget ===\n\n", ranked.String())
 	if s := ranked.ShapesAt(*shapeBudget); s != "" {
 		fmt.Print("\n", s)
+	}
+
+	if reg != nil {
+		// The control that decides whether any of this means anything. If
+		// ranking by the list alone scores close to the fused model, then the
+		// graph is decoration and the registry is doing the work.
+		listOnly := make([]float64, len(test))
+		for i, c := range test {
+			listOnly[i] = c.Features.RegistryShare
+		}
+		control := detect.EvaluateRankedByShape(led, test, listOnly, budgets, typologies)
+		fmt.Print("\n=== control: ranked by the suspect list alone, no graph ===\n\n",
+			control.String())
+
+		fmt.Print("\n=== what the graph adds to the list ===\n\n")
+		fmt.Printf("%8s %10s %10s %14s %16s\n",
+			"alerts", "listed", "reached", "implicated", "per listed acct")
+		for _, k := range budgets {
+			a := registry.Amplification(led, test, scores, k, reg)
+			fmt.Printf("%8d %10d %10d %14d %16.2f\n",
+				k, a.Listed, a.Reached, a.Implicated, a.PerListedAccount())
+		}
+		fmt.Print("\nimplicated counts laundering accounts the list did not already name;\n" +
+			"the listed accounts themselves are excluded, or the input would be\n" +
+			"counted as output.\n")
 	}
 
 	lat := detect.MeasureLatency(led, candidates, windows, cfg, detectWall, ranker)

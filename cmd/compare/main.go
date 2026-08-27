@@ -55,11 +55,7 @@ func main() {
 	ranker := detect.TrainRanker(trainC, detect.Labels(led, trainC), detect.DefaultFeatureSet, score.DefaultTrainOpts())
 
 	scores := ranker.ScoreAll(testC)
-	order := make([]int, len(testC))
-	for i := range order {
-		order[i] = i
-	}
-	sort.Slice(order, func(a, b int) bool { return scores[order[a]] > scores[order[b]] })
+	order := detect.RankOrder(scores)
 
 	k := *topK
 	if k > len(order) {
