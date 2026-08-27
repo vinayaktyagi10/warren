@@ -419,3 +419,54 @@ it doubles the storage and makes the hash cover a copy of the data rather than
 the data. Round-trip the timestamp through the database before hashing —
 rejected, it makes the digest depend on a second query succeeding.
 **My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Temporal features, measured against their own absence
+**Chose:** three scale-free temporal features — finite-size corrected burstiness,
+densest-hour share, and forwarding speed — behind a `FeatureSet` selector, so
+`-features base` and `-features temporal` run the same pipeline and differ only
+in what the ranker sees.
+**Why:** the only thing the ranker knew about time was `span_hours`, which the
+fit has always said carries nothing, and correctly — a span describes the two
+ends of a group and nothing about the arrangement between them. The selector is
+the point as much as the features: a feature added without a way to run the
+pipeline without it is a feature nobody can ever measure. Result: precision up
+at every budget under 2,500, and STACK recall at 1,000 alerts from 42.1% to
+68.4%. BIPARTITE did not move at all, which is mechanistic — a bipartite group
+has no intermediaries by construction, so `conservation`, `pass_through` and
+`fast_forward` are all identically zero on it.
+**Alternative considered:** raw Goh–Barabási burstiness — rejected after
+checking its ceiling, `(sqrt(m)-1)/(sqrt(m)+1)`, which varies with group size;
+it would have been a proxy for a quantity the model already has two features
+for. Hour-of-day and night-share features — not built, because the generator has
+no diurnal structure to find and the feature would have measured the simulator.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — A ranker carries the feature set it was fitted on
+**Chose:** `detect.Ranker` binds the fitted model to its `FeatureSet`, and
+`score.RingFeatureNames` is deleted.
+**Why:** the names were a second source of truth, and adding three features made
+it stale immediately — silently. Nothing failed: the console simply stopped
+printing the coefficients past the end of the old list, and the ones it did
+print would have been correct only by luck. Worse, `Predict` on a vector from
+the wrong set is not a compile error, it is a wrong number. Binding the two
+makes the mismatch unrepresentable rather than merely unlikely, and `ScoreAll`
+removed the same three-line vector-then-predict loop from five call sites.
+**Alternative considered:** keep the list in `score` and add a test that the two
+agree — rejected, it detects the drift instead of preventing it, and only for
+the one pairing the test happens to name.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Report recall per ring shape at the alert budget too
+**Chose:** `EvaluateRankedByShape` breaks recall out per shape at each budget,
+sorted worst first.
+**Why:** the unranked report has always shown per-shape recall, on the stated
+principle that one average must not hide a shape the detector never finds. The
+ranked report — the one describing what an analyst actually receives — showed
+only the average, so the principle was being applied to the number nobody acts
+on and not to the number everybody quotes. It is also what made the STACK result
+visible; at the aggregate the temporal features looked like a rounding change.
+**Alternative considered:** report shapes only at one chosen budget — rejected,
+choosing the budget after seeing the numbers is how a flattering one gets
+picked. Every budget carries the breakdown; `-shape-budget` only selects which
+is printed.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.

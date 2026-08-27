@@ -127,6 +127,13 @@ type Features struct {
 	// Density is transfers per account. Tight, repeatedly-transacting groups
 	// score above the sparse pairs that dominate ordinary traffic.
 	Density float64
+
+	// The temporal features, described in temporal.go. They are computed
+	// always and used only when the selected feature set includes them, so the
+	// with-and-without comparison costs nothing to run.
+	Burstiness   float64
+	MaxHourShare float64
+	FastForward  float64
 }
 
 // Ledger is the working set: filtered transfers plus the account index.
@@ -396,12 +403,60 @@ func summarise(group []Txn, cfg Config, windowStart time.Time) (Candidate, bool)
 	}, true
 }
 
-// Vector renders the features for the ranking model, in the order declared by
-// score.FeatureNames. Amounts are log-scaled: they span nine orders of
-// magnitude, and untransformed they would let a handful of enormous transfers
-// dictate the fit.
-func (f Features) Vector() []float64 {
-	return []float64{
+// FeatureSet selects which features the ranker sees.
+//
+// Two sets exist so a new feature can be measured against its own absence
+// rather than added and assumed to help. Every number in docs/FINDINGS.md that
+// compares them was produced by running the same pipeline twice with this flag
+// as the only difference.
+type FeatureSet string
+
+const (
+	// FeatureSetBase is the nine shape-and-money features the published
+	// results were measured on. It is frozen: changing it would mean every
+	// before-and-after comparison measured a rewrite instead of a feature.
+	FeatureSetBase FeatureSet = "base"
+
+	// FeatureSetTemporal adds what the timestamps say about arrangement in
+	// time. It extends the base set rather than reordering it, so a
+	// coefficient means the same thing under either.
+	FeatureSetTemporal FeatureSet = "temporal"
+)
+
+// DefaultFeatureSet is what the console and the shipped defaults use.
+const DefaultFeatureSet = FeatureSetTemporal
+
+var featureNames = map[FeatureSet][]string{
+	FeatureSetBase: {
+		"log_total_amount", "log_max_amount", "log_mean_amount",
+		"conservation", "pass_through", "log_txns", "log_accounts",
+		"density", "span_hours",
+	},
+}
+
+func init() {
+	featureNames[FeatureSetTemporal] = append(
+		append([]string(nil), featureNames[FeatureSetBase]...),
+		"burstiness", "max_hour_share", "fast_forward")
+}
+
+// FeatureNamesFor labels the coefficients of a model fitted on the given set.
+// An unrecognised set falls back to the default rather than returning a short
+// list, because a length mismatch would mislabel every coefficient printed.
+func FeatureNamesFor(set FeatureSet) []string {
+	if n, ok := featureNames[set]; ok {
+		return n
+	}
+	return featureNames[DefaultFeatureSet]
+}
+
+// VectorFor renders the features for the ranking model, in the order declared
+// by FeatureNamesFor. Amounts and counts are log-scaled: they span nine orders
+// of magnitude, and untransformed they would let a handful of enormous
+// transfers dictate the fit. The temporal features are already ratios and are
+// left alone.
+func (f Features) VectorFor(set FeatureSet) []float64 {
+	base := []float64{
 		math.Log1p(f.TotalAmount),
 		math.Log1p(f.MaxAmount),
 		math.Log1p(f.MeanAmount),
@@ -412,7 +467,14 @@ func (f Features) Vector() []float64 {
 		f.Density,
 		f.SpanHours,
 	}
+	if set == FeatureSetBase {
+		return base
+	}
+	return append(base, f.Burstiness, f.MaxHourShare, f.FastForward)
 }
+
+// Vector renders the default feature set.
+func (f Features) Vector() []float64 { return f.VectorFor(DefaultFeatureSet) }
 
 // features summarises how money moves through a group.
 func features(group []Txn, senders, receivers, accounts map[int32]bool) Features {
@@ -458,6 +520,10 @@ func features(group []Txn, senders, receivers, accounts map[int32]bool) Features
 	if passThrough > 0 {
 		f.Conservation = conservationSum / float64(passThrough)
 	}
+
+	f.Burstiness = burstiness(group)
+	f.MaxHourShare = maxHourShare(group)
+	f.FastForward = fastForward(group)
 	return f
 }
 

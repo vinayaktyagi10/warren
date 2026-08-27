@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/vinayaktyagi10/warren/internal/score"
 )
 
 // Split divides candidates by time into a fitting set and a held-out set.
@@ -61,11 +63,16 @@ func Labels(led *Ledger, candidates []Candidate) []bool {
 	return out
 }
 
-// Vectors renders candidate features for the model.
+// Vectors renders candidate features for the model under the default set.
 func Vectors(candidates []Candidate) [][]float64 {
+	return VectorsFor(candidates, DefaultFeatureSet)
+}
+
+// VectorsFor renders candidate features under a named set.
+func VectorsFor(candidates []Candidate, set FeatureSet) [][]float64 {
 	out := make([][]float64, len(candidates))
 	for i, c := range candidates {
-		out[i] = c.Features.Vector()
+		out[i] = c.Features.VectorFor(set)
 	}
 	return out
 }
@@ -86,10 +93,23 @@ type RankedRow struct {
 	TxnFN       int
 	FPValue     float64
 	PrecisionAt float64
+
+	// PerTypology is recall by ring shape at this budget, present only when
+	// Evaluate was given the labels. The unranked report has always broken
+	// recall out per shape; without the same breakdown here, the one number an
+	// analyst actually experiences is the average that hides BIPARTITE and
+	// STACK.
+	PerTypology map[string]*TypologyStat
 }
 
 // EvaluateRanked scores the held-out candidates at a series of alert budgets.
 func EvaluateRanked(led *Ledger, candidates []Candidate, scores []float64, budgets []int) *RankedReport {
+	return EvaluateRankedByShape(led, candidates, scores, budgets, nil)
+}
+
+// EvaluateRankedByShape is EvaluateRanked with recall broken out per ring shape.
+func EvaluateRankedByShape(led *Ledger, candidates []Candidate, scores []float64,
+	budgets []int, typologies map[int32]string) *RankedReport {
 	order := make([]int, len(candidates))
 	for i := range order {
 		order[i] = i
@@ -140,9 +160,22 @@ func EvaluateRanked(led *Ledger, candidates []Candidate, scores []float64, budge
 		}
 
 		row := RankedRow{TopK: k, TotalRings: len(ringTxns)}
+		if typologies != nil {
+			row.PerTypology = make(map[string]*TypologyStat)
+			for ring := range ringTxns {
+				ty := typologies[ring]
+				if row.PerTypology[ty] == nil {
+					row.PerTypology[ty] = &TypologyStat{Typology: ty}
+				}
+				row.PerTypology[ty].Labelled++
+			}
+		}
 		for ring, n := range hits {
 			if float64(n)/float64(len(ringTxns[ring])) >= coverThreshold {
 				row.RingsFound++
+				if row.PerTypology != nil {
+					row.PerTypology[typologies[ring]].Found++
+				}
 			}
 		}
 		for id := range flagged {
@@ -164,6 +197,41 @@ func EvaluateRanked(led *Ledger, candidates []Candidate, scores []float64, budge
 	return rep
 }
 
+// ShapesAt renders recall per ring shape at one budget, sorted worst first so
+// the shapes the detector struggles with are the ones read first.
+func (r *RankedReport) ShapesAt(budget int) string {
+	var row *RankedRow
+	for i := range r.Rows {
+		if r.Rows[i].TopK == budget {
+			row = &r.Rows[i]
+			break
+		}
+	}
+	if row == nil || row.PerTypology == nil {
+		return ""
+	}
+	stats := make([]*TypologyStat, 0, len(row.PerTypology))
+	for _, s := range row.PerTypology {
+		stats = append(stats, s)
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		a := float64(stats[i].Found) / float64(stats[i].Labelled)
+		b := float64(stats[j].Found) / float64(stats[j].Labelled)
+		if a != b {
+			return a < b
+		}
+		return stats[i].Typology < stats[j].Typology
+	})
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "recall by ring shape at %d alerts\n", row.TopK)
+	for _, s := range stats {
+		fmt.Fprintf(&b, "  %-16s %3d/%-3d (%5.1f%%)\n",
+			s.Typology, s.Found, s.Labelled, 100*float64(s.Found)/float64(s.Labelled))
+	}
+	return b.String()
+}
+
 func (r *RankedReport) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%8s %14s %11s %10s %10s %16s\n",
@@ -175,4 +243,38 @@ func (r *RankedReport) String() string {
 			row.TopK, row.RingsFound, row.TotalRings, p, rc, f1(p, rc), row.FPValue)
 	}
 	return b.String()
+}
+
+// Ranker is a fitted model bound to the feature set it was fitted on.
+//
+// The two travel together because separating them is a silent failure rather
+// than a loud one: scoring a candidate with a vector built from a different set
+// either mislabels every coefficient the console prints, or — once the sets
+// differ in length — quietly reads garbage through the standardiser. Binding
+// them makes the mismatch unrepresentable instead of merely unlikely.
+type Ranker struct {
+	*score.Model
+	Set FeatureSet
+}
+
+// TrainRanker fits the candidate ranker, naming its coefficients from the set
+// they were built from.
+func TrainRanker(candidates []Candidate, labels []bool, set FeatureSet, opts score.TrainOpts) *Ranker {
+	m := score.Train(VectorsFor(candidates, set), labels, opts)
+	m.Names = FeatureNamesFor(set)
+	return &Ranker{Model: m, Set: set}
+}
+
+// Score returns the probability that one candidate is a ring.
+func (r *Ranker) Score(c Candidate) float64 {
+	return r.Predict(c.Features.VectorFor(r.Set))
+}
+
+// ScoreAll scores a slice in order.
+func (r *Ranker) ScoreAll(candidates []Candidate) []float64 {
+	out := make([]float64, len(candidates))
+	for i, c := range candidates {
+		out[i] = r.Score(c)
+	}
+	return out
 }

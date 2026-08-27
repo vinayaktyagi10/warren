@@ -52,12 +52,9 @@ func main() {
 	// --- WARREN ---
 	all := detect.Detect(led, cfg)
 	trainC, testC := detect.Split(all, cut)
-	ranker := score.Train(detect.Vectors(trainC), detect.Labels(led, trainC), score.DefaultTrainOpts())
+	ranker := detect.TrainRanker(trainC, detect.Labels(led, trainC), detect.DefaultFeatureSet, score.DefaultTrainOpts())
 
-	scores := make([]float64, len(testC))
-	for i, v := range detect.Vectors(testC) {
-		scores[i] = ranker.Predict(v)
-	}
+	scores := ranker.ScoreAll(testC)
 	order := make([]int, len(testC))
 	for i := range order {
 		order[i] = i

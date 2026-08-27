@@ -32,6 +32,12 @@ func main() {
 	flag.IntVar(&cfg.MaxAccounts, "max-accounts", cfg.MaxAccounts, "reject groups with more accounts than this; 0 disables")
 	analyse := flag.Bool("analyse", false, "compare features of ring-bearing candidates against ordinary ones")
 	trainFraction := flag.Float64("train-fraction", 0.7, "share of the ledger's time span used to fit the ranker")
+	features := flag.String("features", string(detect.DefaultFeatureSet),
+		"which feature set the ranker sees: \"base\" for the nine shape-and-money\n"+
+			"features, \"temporal\" to add burstiness, hour concentration and\n"+
+			"forwarding speed. Run both to measure what the temporal ones are worth.")
+	shapeBudget := flag.Int("shape-budget", 1000,
+		"alert budget at which to break recall out by ring shape")
 	trimTail := flag.Bool("trim-tail", true,
 		"drop the stretch where the generator stops background traffic and the base rate becomes unrepresentative")
 	flag.Parse()
@@ -98,18 +104,19 @@ func main() {
 	log.Printf("split at %s: %d train candidates (%d bearing a ring), %d held out (%d bearing a ring)",
 		cut.Format("2006-01-02 15:04"), len(train), pos, len(test), countTrue(testLabels))
 
-	model := score.Train(detect.Vectors(train), trainLabels, score.DefaultTrainOpts())
-	fmt.Print("\n", model.Explain())
+	ranker := detect.TrainRanker(train, trainLabels, detect.FeatureSet(*features), score.DefaultTrainOpts())
+	fmt.Printf("\nfeature set: %s\n%s", ranker.Set, ranker.Explain())
 
-	scores := make([]float64, len(test))
-	for i, v := range detect.Vectors(test) {
-		scores[i] = model.Predict(v)
+	scores := ranker.ScoreAll(test)
+
+	budgets := []int{50, 100, 250, 500, 1000, 2500, 5000, len(test)}
+	ranked := detect.EvaluateRankedByShape(led, test, scores, budgets, typologies)
+	fmt.Print("\n=== ranked on held-out data, by alert budget ===\n\n", ranked.String())
+	if s := ranked.ShapesAt(*shapeBudget); s != "" {
+		fmt.Print("\n", s)
 	}
 
-	ranked := detect.EvaluateRanked(led, test, scores, []int{50, 100, 250, 500, 1000, 2500, 5000, len(test)})
-	fmt.Print("\n=== ranked on held-out data, by alert budget ===\n\n", ranked.String())
-
-	lat := detect.MeasureLatency(led, candidates, windows, cfg, detectWall, model.Predict)
+	lat := detect.MeasureLatency(led, candidates, windows, cfg, detectWall, ranker)
 	fmt.Print("\n=== latency ===\n\n", lat.String())
 }
 

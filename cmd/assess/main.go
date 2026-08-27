@@ -54,13 +54,10 @@ func main() {
 
 	candidates := detect.Detect(led, cfg)
 	train, test := detect.Split(candidates, detect.SplitTime(led, *trainFraction))
-	model2 := score.Train(detect.Vectors(train), detect.Labels(led, train), score.DefaultTrainOpts())
+	model2 := detect.TrainRanker(train, detect.Labels(led, train), detect.DefaultFeatureSet, score.DefaultTrainOpts())
 	log.Printf("detected %d candidates, ranking %d held-out", len(candidates), len(test))
 
-	scores := make([]float64, len(test))
-	for i, v := range detect.Vectors(test) {
-		scores[i] = model2.Predict(v)
-	}
+	scores := model2.ScoreAll(test)
 	order := make([]int, len(test))
 	for i := range order {
 		order[i] = i

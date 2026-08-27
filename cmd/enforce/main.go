@@ -165,12 +165,9 @@ func buildSource(led *detect.Ledger, base detect.Config, g geometry,
 
 	all := detect.Detect(led, cfg)
 	train, test := detect.Split(all, cut)
-	model := score.Train(detect.Vectors(train), detect.Labels(led, train), score.DefaultTrainOpts())
+	model := detect.TrainRanker(train, detect.Labels(led, train), detect.DefaultFeatureSet, score.DefaultTrainOpts())
 
-	scores := make([]float64, len(test))
-	for i, v := range detect.Vectors(test) {
-		scores[i] = model.Predict(v)
-	}
+	scores := model.ScoreAll(test)
 	log.Printf("%s: %d candidates, %d held out", g, len(all), len(test))
 
 	// The lease lasts as long as the window that justified it. This is the whole

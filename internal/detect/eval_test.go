@@ -1,6 +1,9 @@
 package detect
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Evaluation decides what every headline number in this project means, so the
 // two thresholds it turns on are pinned here rather than left to be discovered
@@ -154,5 +157,49 @@ func TestBudgetLargerThanTheQueueIsClamped(t *testing.T) {
 	rep := EvaluateRanked(led, []Candidate{{TxnIDs: []int32{1, 2}}}, []float64{0.5}, []int{1000})
 	if rep.Rows[0].TopK != 1 {
 		t.Errorf("TopK = %d, want the queue length 1", rep.Rows[0].TopK)
+	}
+}
+
+// Recall per shape at a budget is what an analyst actually experiences. The
+// unranked report has always had it; without it here, the average hides the
+// shapes the detector barely finds.
+func TestRankedRecallIsBrokenOutPerShapeWhenLabelsAreGiven(t *testing.T) {
+	txns := append(ring(1, 1, 2, 3, 4), ring(2, 5, 6, 7, 8)...)
+	led := ledgerOf(txns...)
+	typ := map[int32]string{1: "CYCLE", 2: "STACK"}
+
+	cands := []Candidate{{TxnIDs: []int32{1, 2, 3, 4}}, {TxnIDs: []int32{5, 6}}}
+	rep := EvaluateRankedByShape(led, cands, []float64{0.9, 0.1}, []int{1, 2}, typ)
+
+	at1 := rep.Rows[0].PerTypology
+	if at1["CYCLE"].Found != 1 || at1["STACK"].Found != 0 {
+		t.Errorf("at one alert: CYCLE %d, STACK %d, want 1 and 0",
+			at1["CYCLE"].Found, at1["STACK"].Found)
+	}
+	if at1["STACK"].Labelled != 1 {
+		t.Errorf("a shape with nothing found must still show its denominator, got %d",
+			at1["STACK"].Labelled)
+	}
+
+	if at2 := rep.Rows[1].PerTypology; at2["STACK"].Found != 1 {
+		t.Errorf("at two alerts STACK found %d, want 1", at2["STACK"].Found)
+	}
+
+	// Worst shape first, so what the detector struggles with is read first.
+	out := rep.ShapesAt(1)
+	if strings.Index(out, "STACK") > strings.Index(out, "CYCLE") {
+		t.Errorf("shapes not ordered worst first:\n%s", out)
+	}
+}
+
+// Without labels the breakdown is absent rather than empty or wrong.
+func TestRankedShapesAreAbsentWithoutLabels(t *testing.T) {
+	led := ledgerOf(ring(1, 1, 2)...)
+	rep := EvaluateRanked(led, []Candidate{{TxnIDs: []int32{1, 2}}}, []float64{0.5}, []int{1})
+	if rep.Rows[0].PerTypology != nil {
+		t.Error("a report built without typologies invented a breakdown")
+	}
+	if rep.ShapesAt(1) != "" {
+		t.Error("ShapesAt rendered something from no labels")
 	}
 }

@@ -4,8 +4,6 @@ import (
 	"math"
 	"testing"
 	"time"
-
-	"github.com/vinayaktyagi10/warren/internal/score"
 )
 
 var epoch = time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -47,15 +45,14 @@ func ledgerOf(txns ...Txn) *Ledger {
 // the feature vector is a contract with the model
 // --------------------------------------------------------------------------
 
-// The ranker reports coefficients against score.RingFeatureNames by position.
-// If the two ever drift apart, every explanation the console prints is silently
-// mislabelled — a coefficient attributed to the wrong feature — and nothing
-// else in the system would notice.
+// The ranker reports coefficients by position against the names for the set it
+// was fitted on. If the two drift apart, every explanation the console prints
+// is silently mislabelled and nothing else in the system would notice.
 func TestVectorMatchesTheDeclaredFeatureNames(t *testing.T) {
 	v := Features{}.Vector()
-	if len(v) != len(score.RingFeatureNames) {
-		t.Fatalf("vector has %d entries, score.RingFeatureNames declares %d",
-			len(v), len(score.RingFeatureNames))
+	if len(v) != len(FeatureNamesFor(DefaultFeatureSet)) {
+		t.Fatalf("vector has %d entries, the default set declares %d names",
+			len(v), len(FeatureNamesFor(DefaultFeatureSet)))
 	}
 }
 
@@ -65,7 +62,7 @@ func TestVectorLogScalesAmountsAndCounts(t *testing.T) {
 		Txns: 9, Accounts: 3,
 		Conservation: 0.5, PassThroughRatio: 0.25, Density: 3, SpanHours: 12,
 	}
-	v := f.Vector()
+	v := f.VectorFor(FeatureSetBase)
 	want := []float64{
 		math.Log1p(999), math.Log1p(99), math.Log1p(9),
 		0.5, 0.25,
@@ -74,7 +71,7 @@ func TestVectorLogScalesAmountsAndCounts(t *testing.T) {
 	}
 	for i := range want {
 		if math.Abs(v[i]-want[i]) > 1e-9 {
-			t.Errorf("%s: got %g want %g", score.RingFeatureNames[i], v[i], want[i])
+			t.Errorf("%s: got %g want %g", FeatureNamesFor(FeatureSetBase)[i], v[i], want[i])
 		}
 	}
 }

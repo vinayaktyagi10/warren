@@ -21,20 +21,6 @@ import (
 	"strings"
 )
 
-// RingFeatureNames documents the candidate-level vector layout. Order matters:
-// coefficients are reported against these names.
-var RingFeatureNames = []string{
-	"log_total_amount",
-	"log_max_amount",
-	"log_mean_amount",
-	"conservation",
-	"pass_through",
-	"log_txns",
-	"log_accounts",
-	"density",
-	"span_hours",
-}
-
 // Standardizer rescales features to zero mean and unit variance. Without it the
 // amount features, which run to hundreds of millions, would dominate the
 // gradient and the model would effectively ignore everything else.
@@ -198,14 +184,17 @@ func (m *Model) Explain() string {
 	return b.String()
 }
 
-// featureName labels a coefficient, falling back to the candidate-level names
-// when the shape matches and to the index when nothing else is known.
+// featureName labels a coefficient, falling back to the index when the caller
+// supplied no names.
+//
+// The names deliberately live with whoever builds the vector rather than in a
+// list here. A copy in this package was a second source of truth, and when the
+// vector grew it went stale silently: nothing failed, the console simply
+// stopped printing the coefficients past the end of the old list. Names that
+// travel with the model cannot drift from the vector they label.
 func (m *Model) featureName(i int) string {
 	if i < len(m.Names) {
 		return m.Names[i]
-	}
-	if len(m.Names) == 0 && len(m.Weights) == len(RingFeatureNames) {
-		return RingFeatureNames[i]
 	}
 	return fmt.Sprintf("feature_%d", i)
 }

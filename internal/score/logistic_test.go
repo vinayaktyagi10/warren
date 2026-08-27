@@ -227,18 +227,18 @@ func TestExplainNamesFeaturesAndOrdersByInfluence(t *testing.T) {
 	}
 }
 
-// The same fitting code serves the candidate ranker and the per-transaction
-// baseline, so an unnamed model of the ranker's shape falls back to the ring
-// names and anything else falls back to indices rather than mislabelling.
-func TestUnnamedModelsFallBackSafely(t *testing.T) {
-	ring := &Model{Weights: make([]float64, len(RingFeatureNames)),
-		Scaler: &Standardizer{}}
-	if got := ring.featureName(3); got != RingFeatureNames[3] {
-		t.Errorf("got %q, want %q", got, RingFeatureNames[3])
+// A model whose caller supplied no names labels its coefficients by index
+// rather than borrowing a list that might not describe them. The names used to
+// live here, and when the vector grew they silently stopped matching it.
+func TestUnnamedModelsFallBackToIndices(t *testing.T) {
+	m := &Model{Weights: make([]float64, 3), Scaler: &Standardizer{}}
+	if got := m.featureName(1); got != "feature_1" {
+		t.Errorf("got %q, want feature_1", got)
 	}
 
-	other := &Model{Weights: make([]float64, 3), Scaler: &Standardizer{}}
-	if got := other.featureName(1); got != "feature_1" {
-		t.Errorf("got %q, want feature_1", got)
+	named := &Model{Weights: make([]float64, 3), Names: []string{"a", "b", "c"},
+		Scaler: &Standardizer{}}
+	if got := named.featureName(1); got != "b" {
+		t.Errorf("got %q, want b", got)
 	}
 }

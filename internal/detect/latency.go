@@ -17,14 +17,13 @@ import (
 // this path is fast enough that the instrument is a visible share of the reading
 // and a percentile that sits at the floor is a measurement of the clock.
 func MeasureLatency(led *Ledger, candidates []Candidate, windows []latency.Window,
-	cfg Config, wall time.Duration, predict func([]float64) float64) latency.Report {
+	cfg Config, wall time.Duration, rank *Ranker) latency.Report {
 
 	var score latency.Recorder
 	sink := 0.0
 	for _, c := range candidates {
 		t0 := time.Now()
-		v := c.Features.Vector()
-		p := predict(v)
+		p := rank.Score(c)
 		score.Observe(time.Since(t0))
 		sink += p // keep the work from being optimised away
 	}

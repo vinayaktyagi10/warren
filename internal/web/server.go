@@ -57,7 +57,7 @@ type Server struct {
 	txnByID    map[int32]*detect.Txn
 	typologies map[int32]string
 
-	model   *score.Model
+	model   *detect.Ranker
 	report  *detect.Report
 	ranked  *detect.RankedReport
 	latency latency.Report
@@ -143,13 +143,10 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	detectWall := time.Since(detectStart)
 	cut := detect.SplitTime(led, trainFraction)
 	train, test := detect.Split(all, cut)
-	s.model = score.Train(detect.Vectors(train), detect.Labels(led, train), score.DefaultTrainOpts())
+	s.model = detect.TrainRanker(train, detect.Labels(led, train),
+		detect.DefaultFeatureSet, score.DefaultTrainOpts())
 	s.candidates = test
-
-	s.scores = make([]float64, len(test))
-	for i, v := range detect.Vectors(test) {
-		s.scores[i] = s.model.Predict(v)
-	}
+	s.scores = s.model.ScoreAll(test)
 	s.order = make([]int, len(test))
 	for i := range s.order {
 		s.order[i] = i
@@ -160,7 +157,7 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	s.ranked = detect.EvaluateRanked(led, test, s.scores,
 		[]int{50, 100, 250, 500, 1000, 2500, len(test)})
 
-	s.latency = detect.MeasureLatency(led, all, windows, s.cfg, detectWall, s.model.Predict)
+	s.latency = detect.MeasureLatency(led, all, windows, s.cfg, detectWall, s.model)
 	log.Printf("latency: score p50 %s, arrival to decision p50 %s",
 		latency.Short(s.latency.Score.P50), latency.Short(s.latency.Decision.P50))
 
@@ -734,11 +731,16 @@ type weightRow struct {
 	Abs    float64
 }
 
+// modelWeights reads the names off the fitted model rather than a list held
+// here, so a feature added to the vector appears in the table by itself.
 func (s *Server) modelWeights() []weightRow {
-	rows := make([]weightRow, 0, len(score.RingFeatureNames))
-	for i, n := range score.RingFeatureNames {
-		w := s.model.Weights[i]
-		rows = append(rows, weightRow{n, w, math.Abs(w)})
+	rows := make([]weightRow, 0, len(s.model.Weights))
+	for i, w := range s.model.Weights {
+		name := fmt.Sprintf("feature_%d", i)
+		if i < len(s.model.Names) {
+			name = s.model.Names[i]
+		}
+		rows = append(rows, weightRow{name, w, math.Abs(w)})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Abs > rows[j].Abs })
 	return rows

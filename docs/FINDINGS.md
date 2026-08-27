@@ -568,3 +568,112 @@ Interception is still 0.66% of a ceiling that is itself 31.75% at this geometry.
 Two passes did not fix that and were never going to: finding 13's ceiling is a
 property of when evidence exists, not of how many detectors read it. What changed
 is that the queue no longer has to be sacrificed to get any enforcement at all.
+
+---
+
+# 15. Temporal features: what the timestamps say that the shape does not
+
+Until now the ranker's only knowledge of time was `span_hours`, and the fit had
+always said `span_hours` carries nothing — coefficient +0.058 against
+`pass_through`'s +0.839. That is not surprising on reflection. A span is one
+number about the two ends of a group and says nothing about the arrangement in
+between: twenty transfers in an hour and one a week later have the same span as
+twenty spread evenly, and only one of those is structuring.
+
+Three features were added, all scale-free on purpose, because labelled rings here
+complete in anywhere from 21 to 129 hours and anything denominated in hours would
+mostly be measuring ring size.
+
+**`burstiness`** — the Goh–Barabási parameter over inter-arrival times,
+`(sd - mean) / (sd + mean)`: -1 perfectly regular, 0 Poisson, +1 a tight burst
+against a quiet background.
+
+The raw statistic would not have done, and the reason is worth stating because
+it is the kind of thing that quietly ruins a feature. Its attainable maximum is
+`(sqrt(m) - 1) / (sqrt(m) + 1)` over `m` intervals, so a three-transfer group
+cannot score above 0.17 however tightly packed it is, while a fifty-transfer
+group reaches 0.75. Fed to the ranker raw it would have been a proxy for group
+size — which the model already has two features for — and whatever coefficient
+it earned would have been unreadable. What is used is the finite-size corrected
+form (Kim & Jo 2016), which reaches exactly ±1 at the extremes for any group
+size. `TestBurstinessDoesNotSmuggleInGroupSize` is that argument as a test.
+
+**`max_hour_share`** — the largest share of a group's transfers inside any one
+hour, over a sliding window rather than fixed buckets, so a burst straddling an
+hour boundary is not halved by an accident of clock alignment.
+
+**`fast_forward`** — how quickly intermediaries pass money on, as a share of the
+group's span. This is the other half of `conservation`, the strongest single
+feature in the model. Conservation says how much of what an account receives
+leaves again; on its own that also describes a business that happens to net out
+over a quarter. Speed is what separates the two, and neither number says it
+alone.
+
+## What they were worth
+
+Same pipeline, same split, same seed, `-features` the only difference.
+
+| alerts | rings found (base → temporal) | precision (base → temporal) |
+|-------:|:-----------------------------|:----------------------------|
+| 50 | 37 → **39** | 13.08% → **14.32%** |
+| 100 | 41 → **48** | 8.44% → **10.51%** |
+| 250 | 67 → **76** | 6.40% → **7.29%** |
+| 500 | 88 → **92** | 4.62% → **4.98%** |
+| 1,000 | 101 → **108** | 3.41% → **3.55%** |
+| 2,500 | 139 → **135** | 2.27% → 2.22% |
+| 5,000 | 158 → **165** | 1.65% → 1.64% |
+
+Better at every budget an analyst would actually work, worse at 2,500. The gain
+is real and modest: +1.2 points of precision at 50 alerts, which on a 0.1% base
+rate is 100× lift becoming 110×.
+
+The coefficients say the features earned their place rather than being carried:
+
+```
+pass_through   +0.675      density        -0.432
+fast_forward   +0.557      log_accounts   +0.367
+burstiness     +0.534      log_max_amount +0.259
+conservation   +0.508      log_txns       +0.154
+                           max_hour_share -0.135
+                           span_hours     +0.129
+```
+
+`fast_forward` and `burstiness` come in second and third. `conservation` falls
+from +0.645 to +0.508, which is what should happen: `fast_forward` is its
+complement and absorbs some of the same signal.
+
+## The one that fired, and the one that did not
+
+**STACK recall at 1,000 alerts went 42.1% → 68.4%.** STACK is one of the two
+shapes this project has been reporting as barely detected, so this is the single
+most useful thing the temporal features did.
+
+**BIPARTITE did not move at all: 25.0% before, 25.0% after.**
+
+Both follow from the same fact, which is why this is a mechanism rather than
+luck. A STACK is a layering chain — value passed down a line of intermediaries —
+so forwarding speed is close to a direct measurement of what makes it a STACK. A
+BIPARTITE group has *no* intermediaries by construction: `classify` names it
+BIPARTITE precisely when no account both sends and receives. So `pass_through`
+is 0, `conservation` is 0, and `fast_forward` is 0 for every bipartite group
+that exists. Three of the model's strongest features are structurally silent on
+the shape it is worst at, and adding a fourth feature built on intermediaries
+could not have helped it.
+
+That is the honest read: the temporal features improved the shape they have a
+mechanism for and left untouched the shape they have none for. **BIPARTITE
+remains the detector's real hole, and nothing in this section touched it.**
+
+## What cannot be claimed
+
+There is **no SMURFING label in IBM AML**, so none of this validates a
+structuring typology. The claim is only what is measured above: three temporal
+features, a modest precision gain at working budgets, and one weak shape
+substantially recovered.
+
+`max_hour_share` carries almost nothing (-0.135) and carries it with the
+*opposite* sign to the intuition that motivated it — concentration into a single
+hour slightly lowers suspicion here. It is kept, unweighted and unhidden, on the
+same principle as `density` and `span_hours`: a feature the fit rejects is
+evidence about the data, and removing it would leave only the features that
+happened to work.
