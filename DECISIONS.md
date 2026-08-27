@@ -366,3 +366,56 @@ rejected, it is tuning a safety limit for appearances, and it would be the one
 number in the demo that was chosen to make the demo work.
 **My answer before seeing yours:** n/a — found while verifying that the freeze
 path was reachable at all.
+
+## 2026-08-27 — Test the two hash chains against Postgres, not a fake
+**Chose:** the audit log and the restriction ledger are tested against a real
+database, in a throwaway schema per test (`internal/dbtest`), rather than behind
+an in-memory interface.
+**Why:** the property both chains claim — that two concurrent writers cannot
+fork the log — lives entirely in what Postgres does with a lock inside a
+transaction. A fake reimplements that behaviour and then passes, which tests the
+fake. Taking a private schema and setting `search_path` on the pool gives each
+test its own copy of every table, so the suite cannot touch loaded data or a
+demo's audit log, and it skips rather than fails where no database is reachable.
+It found two bugs in the first run.
+**Alternative considered:** a repository interface with a memory implementation —
+rejected, it would have hidden both bugs. A shared test database with truncation
+between tests — rejected, tests then cannot run in parallel and a crashed run
+leaves the developer's own data truncated.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Serialise chain appends with an advisory lock
+**Chose:** `pg_advisory_xact_lock` on a fixed per-chain key at the top of every
+append transaction, replacing `SELECT ... ORDER BY seq DESC LIMIT 1 FOR UPDATE`.
+**Why:** the row lock did not do what its comment claimed. A second writer
+blocked on it re-reads the row it was waiting on, not the newer row the first
+writer inserted meanwhile, so both chain onto the same predecessor; and on an
+empty table it locks nothing at all, which is the state at the first two
+decisions of every run. The log forks and then fails to verify, reporting
+tampering on a log nobody touched. That is the worst failure this component can
+have — it destroys trust in the single signal the component exists to give. An
+advisory lock is held for the length of the transaction, needs no row to exist,
+and costs one round trip. Found by a test that ran eight concurrent writers.
+**Alternative considered:** `LOCK TABLE ... IN EXCLUSIVE MODE` — works, but
+blocks readers' concurrent maintenance for no gain. SERIALIZABLE plus a retry
+loop — correct, but it puts retry logic in the one code path that must be
+simple enough to read and believe.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Hash timestamps at the precision the storage keeps
+**Chose:** the restriction chain digests instants truncated to microseconds in a
+fixed-width layout, matching what the decision log already did.
+**Why:** it was RFC3339Nano, and the consequence is that the restriction chain
+had never verified once — not in any demo, not in any run. Postgres keeps
+`timestamptz` to the microsecond, so the nanosecond digits in the digest are
+gone by the time the row is read back and every entry recomputes to something
+else. RFC3339Nano also drops trailing zeroes, so two instants at matching
+precision can still render differently. A verifier that reports tampering on
+every untouched row is worse than no verifier, because the one real break is
+then indistinguishable from the noise it always emits. Found the first time a
+test read a written ledger back.
+**Alternative considered:** store the digest input alongside the row — rejected,
+it doubles the storage and makes the hash cover a copy of the data rather than
+the data. Round-trip the timestamp through the database before hashing —
+rejected, it makes the digest depend on a second query succeeding.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.

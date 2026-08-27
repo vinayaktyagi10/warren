@@ -59,11 +59,15 @@ func (e Event) Active(t time.Time) bool {
 	return e.Event == EventImpose && !t.Before(e.ImposedAt) && t.Before(e.ExpiresAt)
 }
 
+// appendLock serialises appenders to the restriction chain. It is a different
+// key from the decision log's so the two chains never wait on each other.
+const appendLock = 0x7761_7272_656e_0002 // "warren" chain 2
+
 // Record appends one event and returns its sequence number and hash.
 //
-// The read of the previous hash and the insert share a transaction with the row
-// locked, so two writers cannot chain onto the same predecessor and fork the
-// ledger — the same discipline the decision log uses, for the same reason.
+// The advisory lock, held for the length of the transaction, is what stops two
+// writers chaining onto the same predecessor and forking the ledger — the same
+// discipline the decision log uses, for the same reason set out there.
 func (s *Store) Record(ctx context.Context, e Event) (int64, string, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -71,9 +75,13 @@ func (s *Store) Record(ctx context.Context, e Event) (int64, string, error) {
 	}
 	defer tx.Rollback(ctx)
 
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(appendLock)); err != nil {
+		return 0, "", fmt.Errorf("take append lock: %w", err)
+	}
+
 	prevHash := GenesisHash
 	err = tx.QueryRow(ctx,
-		`SELECT hash FROM account_restrictions ORDER BY seq DESC LIMIT 1 FOR UPDATE`).Scan(&prevHash)
+		`SELECT hash FROM account_restrictions ORDER BY seq DESC LIMIT 1`).Scan(&prevHash)
 	if err != nil && !strings.Contains(err.Error(), "no rows") {
 		return 0, "", fmt.Errorf("read previous hash: %w", err)
 	}
@@ -233,6 +241,24 @@ func (s *Store) Verify(ctx context.Context) (*VerifyResult, error) {
 	return res, nil
 }
 
+// stamp renders an instant for the digest at the precision the storage can
+// actually hold.
+//
+// This was RFC3339Nano, and it meant the restriction chain had never once
+// verified. Postgres keeps timestamptz to the microsecond, so the nanosecond
+// digits written into the hash are gone by the time the row is read back and
+// every entry recomputes to something else. The chain reported tampering on a
+// ledger nobody had touched — a verifier that always cries wolf is worse than
+// none, because the one real break is indistinguishable from the noise. The
+// decision log had it right; this is the same format, for the same reason.
+//
+// The zeroes in the layout are load-bearing: RFC3339Nano drops trailing zeroes,
+// so two instants a database round trip apart could render differently even at
+// matching precision.
+func stamp(t time.Time) string {
+	return t.UTC().Truncate(time.Microsecond).Format("2006-01-02T15:04:05.000000Z")
+}
+
 // eventHash commits to the action's content, its position, and its predecessor.
 func eventHash(e Event) string {
 	h := sha256.New()
@@ -242,7 +268,7 @@ func eventHash(e Event) string {
 	}
 	fmt.Fprintf(h, "%d\n%s\n%s\n%s\n%s\n%d\n%d\n%s\n%s\n%s\n%s\n",
 		e.Seq, e.PrevHash, e.Event, e.Account, e.Tier, e.RingID, ds, e.Pass, e.Reason,
-		e.ImposedAt.UTC().Format(time.RFC3339Nano), e.ExpiresAt.UTC().Format(time.RFC3339Nano))
+		stamp(e.ImposedAt), stamp(e.ExpiresAt))
 	return hex.EncodeToString(h.Sum(nil))
 }
 

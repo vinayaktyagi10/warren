@@ -2,6 +2,7 @@ package detect
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -34,7 +35,10 @@ func SplitTime(led *Ledger, trainFraction float64) time.Time {
 	}
 	first := led.Txns[0].TS
 	last := led.Txns[len(led.Txns)-1].TS
-	return first.Add(time.Duration(float64(last.Sub(first)) * trainFraction))
+	// Rounded rather than truncated: the float product lands a nanosecond short
+	// of the intended instant, which would put a candidate whose window sits
+	// exactly on the boundary on the wrong side of the split.
+	return first.Add(time.Duration(math.Round(float64(last.Sub(first)) * trainFraction)))
 }
 
 // Labels marks which candidates contain a labelled ring.

@@ -40,11 +40,22 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Log, error) {
 	return &Log{pool: pool}, nil
 }
 
+// appendLock serialises appenders to this chain. The key is arbitrary but must
+// stay fixed: it names the lock, not the data.
+const appendLock = 0x7761_7272_656e_0001 // "warren" chain 1
+
 // Record appends one decision and returns its sequence number and hash.
 //
-// The read of the previous hash and the insert share a transaction taken with
-// the row locked, so two concurrent writers cannot both chain onto the same
-// predecessor and fork the log.
+// An advisory lock held for the length of the transaction is what makes the
+// chain a chain. Locking the last row instead is not enough, and the way it
+// fails is quiet: a second writer blocked on `SELECT ... ORDER BY seq DESC
+// LIMIT 1 FOR UPDATE` re-reads the row it was waiting on, not the newer row the
+// first writer has since inserted, so both chain onto the same predecessor. It
+// also locks nothing at all on an empty table, which is when the first two
+// decisions of every run are written. Either way the log forks and then fails
+// to verify, reporting tampering on a log nobody touched — the worst failure
+// this component has, because it destroys trust in the one signal it exists to
+// give.
 func (l *Log) Record(ctx context.Context, ev agent.Evidence, a agent.Assessment) (int64, string, error) {
 	evidenceJSON, err := json.Marshal(ev)
 	if err != nil {
@@ -57,9 +68,13 @@ func (l *Log) Record(ctx context.Context, ev agent.Evidence, a agent.Assessment)
 	}
 	defer tx.Rollback(ctx)
 
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(appendLock)); err != nil {
+		return 0, "", fmt.Errorf("take append lock: %w", err)
+	}
+
 	prevHash := GenesisHash
 	err = tx.QueryRow(ctx,
-		`SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1 FOR UPDATE`).Scan(&prevHash)
+		`SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1`).Scan(&prevHash)
 	if err != nil && !strings.Contains(err.Error(), "no rows") {
 		return 0, "", fmt.Errorf("read previous hash: %w", err)
 	}
