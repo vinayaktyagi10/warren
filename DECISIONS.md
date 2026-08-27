@@ -519,3 +519,36 @@ two answers.
 Accept it as noise and quote a range — rejected, it is not noise, it is
 non-determinism, and the fix is fifteen lines.
 **My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Fuse the isolation forest as a feature, not as a second opinion
+**Chose:** the forest's score is handed to the logistic model as one more
+feature, rather than averaged with the ranker's score or thresholded into a
+second alert stream.
+**Why:** it makes the question falsifiable. Averaging two scores requires
+choosing a weight, and any weight chosen by hand is a claim nobody measured; a
+threshold requires choosing a cut-off with the same problem. As a feature the
+fit chooses the weight and the coefficient is printed, so "was the unsupervised
+half worth anything" has a published number. The number came out **negative**
+(−0.288): being anomalous lowers suspicion, because a laundering ring is
+engineered to look ordinary and the genuinely unusual clusters here are unusual
+and innocent. A hand-chosen positive weight would have made the system worse and
+nothing would have said so.
+**Alternative considered:** score fusion by rank averaging — rejected for the
+above. A separate anomaly queue — rejected, it doubles the alert budget, and
+§"comparisons hold total alert budget constant" already settled what that does
+to a comparison.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-27 — Isolation forest measured and not adopted as the default
+**Chose:** `-features anomaly` exists; the shipped default stays `temporal`.
+**Why:** it buys a 31% cut in false-positive value held at 1,000 alerts for
+essentially unchanged ring recall — a real argument for a project that says it
+spent its budget on making a wrong answer safe. It costs 16 points of STACK
+recall and 6 of BIPARTITE, which are the two shapes this project has been most
+open about being bad at. Buying a cost reduction with recall on the detector's
+weakest structures is the wrong direction, and the alternative reading is close
+enough that the flag exists and both tables are published rather than one.
+**Alternative considered:** adopt it and lead with the false-positive number —
+rejected; it would mean quietly regressing the two weakest shapes while
+advertising an improvement.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.

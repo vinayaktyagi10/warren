@@ -766,3 +766,92 @@ are shown rather than only the tidy one.
 capability, not part of the shipped configuration, because the list is simulated
 and quoting a simulated-registry precision as this system's headline would be
 exactly the kind of number this project keeps throwing away.
+
+---
+
+# 17. The isolation forest: the report's recommendation, measured and declined
+
+The India BFSI report describes GNN + Extended Isolation Forest as the working
+architecture for this problem. §"No GNN" in the project notes explains why the
+graph half was skipped. This is the other half, built and measured.
+
+The reason to want it is real. The logistic ranker is supervised: it learned
+what the 1,200 ring-bearing candidates in the fitting set looked like, and it
+scores a new group by resemblance to them. That is the right instrument for a
+typology someone has already labelled and the wrong one for a typology nobody
+has — IBM AML ships eight named shapes, and a ninth would score *low* under the
+ranker precisely because it is new. An isolation forest needs no labels: it
+measures how few random splits it takes to cut a group away from the mass, so it
+says "unlike ordinary traffic" rather than "like the rings we were shown".
+
+It is fused by handing the forest's score to the logistic model as one more
+feature rather than by averaging the two or picking a threshold, so the fit
+decides what it is worth and *publishes the coefficient*. That decision is why
+this section has an answer rather than an assumption.
+
+## The coefficient came out negative
+
+```
+pass_through   +0.725      density        -0.387
+conservation   +0.595      log_max_amount +0.289
+burstiness     +0.582      anomaly        -0.288
+fast_forward   +0.534      log_txns       +0.195
+log_accounts   +0.423
+```
+
+**Being anomalous lowers suspicion.** The forest works — it finds the unusual
+groups — and the unusual groups are disproportionately innocent.
+
+That is not a surprise once stated, and it is the project's own thesis coming
+back around: *a laundering ring is engineered to look ordinary*. That is the
+entire premise of structuring money this way, the reason per-transaction scoring
+fails on it, and the reason §"the bet" exists. A detector that hunts for the
+unusual is hunting for the one thing a competent ring is designed not to be. The
+genuinely weird account clusters in this ledger are weird-and-legitimate: odd
+businesses, not mules.
+
+## What it actually bought, and what it cost
+
+| alerts | rings (temporal → +forest) | precision | false-positive value held |
+|-------:|:---------------------------|:----------|:--------------------------|
+| 50 | 39 → **42** | 0.1432 → **0.1575** | 3.13bn → **2.77bn** (−11%) |
+| 250 | 76 → 75 | 0.0729 → 0.0697 | 31.04bn → **14.11bn** (−55%) |
+| 500 | 92 → 92 | 0.0498 → 0.0505 | 42.64bn → **33.61bn** (−21%) |
+| 1,000 | 108 → 104 | 0.0355 → 0.0351 | 74.91bn → **51.73bn** (−31%) |
+| 2,500 | 135 → 138 | 0.0222 → 0.0223 | 150.99bn → **87.56bn** (−42%) |
+| 5,000 | 165 → 165 | 0.0164 → 0.0163 | 181.93bn → 168.88bn (−7%) |
+
+Ring recall is a wash — within a few rings either way at every budget. **The
+false-positive value held falls by a third**, because the negative coefficient
+steers the queue away from the enormous odd-but-innocent clusters that dominate
+the money held.
+
+The cost is on exactly the shapes that could least afford it:
+
+| shape | temporal | + forest |
+|:------|---------:|---------:|
+| STACK | 68.4% | **52.6%** |
+| BIPARTITE | 25.0% | **18.8%** |
+
+## Not adopted as the default
+
+The trade is: the same rings, holding a third less innocent money, in exchange
+for 16 points of STACK recall and 6 of BIPARTITE.
+
+For a project whose stated posture is that a fixed budget was spent on making a
+wrong answer safe rather than on making the answer marginally righter, taking a
+third off the false-positive bill is a real argument. It is declined anyway,
+because the two shapes it takes from are the two this project has been most
+open about being bad at, and buying a cost reduction with recall on the
+detector's weakest structures is going the wrong way. `-features anomaly`
+exposes it; the default stays `temporal`, and the published headline numbers
+stay the ones already defended.
+
+Combined with the registry (`-features all`) the forest keeps its negative
+coefficient (−0.280) and adds little the registry had not already added:
+113 rings at 1,000 alerts against 115 for the registry alone at the same
+coverage.
+
+**The finding is the negative coefficient, not the table.** It is a measured
+statement that on this data the unsupervised anomaly half of the recommended
+architecture points the wrong way, and a mechanical reason why.

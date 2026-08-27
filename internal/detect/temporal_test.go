@@ -269,3 +269,62 @@ func TestARankerCarriesItsOwnFeatureNames(t *testing.T) {
 		}
 	}
 }
+
+// Every selectable set must describe itself correctly. A set whose vector and
+// name list disagree mislabels every coefficient the console prints, and
+// nothing else in the system checks.
+func TestEverySetIsSelfDescribing(t *testing.T) {
+	f := Features{}
+	seen := map[int]FeatureSet{}
+	for _, set := range Sets() {
+		v, names := f.VectorFor(set), FeatureNamesFor(set)
+		if len(v) != len(names) {
+			t.Errorf("%s: %d vector entries against %d names", set, len(v), len(names))
+		}
+		// Every set extends the base set in place.
+		for i, n := range FeatureNamesFor(FeatureSetBase) {
+			if names[i] != n {
+				t.Errorf("%s: position %d is %q, want %q", set, i, names[i], n)
+			}
+		}
+		if prev, dup := seen[len(v)]; dup && prev != set {
+			t.Logf("note: %s and %s are both %d wide", prev, set, len(v))
+		}
+		seen[len(v)] = set
+	}
+}
+
+// The values a set claims to carry must actually reach the vector, or a feature
+// is declared, weighted, and always zero.
+func TestEachSetCarriesItsOwnFeatures(t *testing.T) {
+	f := Features{Burstiness: 0.11, MaxHourShare: 0.22, FastForward: 0.33,
+		RegistryShare: 0.44, Anomaly: 0.55}
+
+	carries := func(set FeatureSet, name string, want float64) {
+		t.Helper()
+		names := FeatureNamesFor(set)
+		v := f.VectorFor(set)
+		for i, n := range names {
+			if n == name {
+				if v[i] != want {
+					t.Errorf("%s: %s = %g, want %g", set, name, v[i], want)
+				}
+				return
+			}
+		}
+		t.Errorf("%s does not carry %s", set, name)
+	}
+
+	carries(FeatureSetTemporal, "burstiness", 0.11)
+	carries(FeatureSetRegistry, "registry_share", 0.44)
+	carries(FeatureSetAnomaly, "anomaly", 0.55)
+	carries(FeatureSetAll, "registry_share", 0.44)
+	carries(FeatureSetAll, "anomaly", 0.55)
+
+	// And a set must not carry what it does not declare.
+	for _, n := range FeatureNamesFor(FeatureSetTemporal) {
+		if n == "registry_share" || n == "anomaly" {
+			t.Errorf("the temporal set declares %q", n)
+		}
+	}
+}

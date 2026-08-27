@@ -141,6 +141,13 @@ type Features struct {
 	// whether a list exists, so the with-and-without comparison is a matter of
 	// not annotating rather than of running a different detector.
 	RegistryShare float64
+
+	// Anomaly is an isolation forest's score for this group: how few random
+	// splits it took to cut it away from the mass of ordinary candidates.
+	// Filled by internal/forest. It answers a different question from the
+	// ranker — "unlike ordinary traffic" rather than "like the rings we were
+	// shown" — which is the only reason to carry both.
+	Anomaly float64
 }
 
 // Ledger is the working set: filtered transfers plus the account index.
@@ -447,6 +454,14 @@ const (
 	// candidates; without that the feature is a constant zero and the
 	// standardiser will say so.
 	FeatureSetRegistry FeatureSet = "registry"
+
+	// FeatureSetAnomaly adds the isolation forest's score. It needs
+	// internal/forest to have annotated the candidates.
+	FeatureSetAnomaly FeatureSet = "anomaly"
+
+	// FeatureSetAll is every feature at once, for the run that says whether
+	// the registry and the forest are measuring the same thing.
+	FeatureSetAll FeatureSet = "all"
 )
 
 // DefaultFeatureSet is what the console and the shipped defaults use.
@@ -467,6 +482,19 @@ func init() {
 	featureNames[FeatureSetRegistry] = append(
 		append([]string(nil), featureNames[FeatureSetTemporal]...),
 		"registry_share")
+	featureNames[FeatureSetAnomaly] = append(
+		append([]string(nil), featureNames[FeatureSetTemporal]...),
+		"anomaly")
+	featureNames[FeatureSetAll] = append(
+		append([]string(nil), featureNames[FeatureSetRegistry]...),
+		"anomaly")
+}
+
+// Sets lists the selectable feature sets, for flag help and for tests that
+// must cover every one of them.
+func Sets() []FeatureSet {
+	return []FeatureSet{FeatureSetBase, FeatureSetTemporal,
+		FeatureSetRegistry, FeatureSetAnomaly, FeatureSetAll}
 }
 
 // FeatureNamesFor labels the coefficients of a model fitted on the given set.
@@ -500,8 +528,11 @@ func (f Features) VectorFor(set FeatureSet) []float64 {
 		return base
 	}
 	v := append(base, f.Burstiness, f.MaxHourShare, f.FastForward)
-	if set == FeatureSetRegistry {
+	if set == FeatureSetRegistry || set == FeatureSetAll {
 		v = append(v, f.RegistryShare)
+	}
+	if set == FeatureSetAnomaly || set == FeatureSetAll {
+		v = append(v, f.Anomaly)
 	}
 	return v
 }

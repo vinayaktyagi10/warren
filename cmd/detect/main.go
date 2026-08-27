@@ -14,6 +14,7 @@ import (
 
 	"github.com/vinayaktyagi10/warren/internal/db"
 	"github.com/vinayaktyagi10/warren/internal/detect"
+	"github.com/vinayaktyagi10/warren/internal/forest"
 	"github.com/vinayaktyagi10/warren/internal/registry"
 	"github.com/vinayaktyagi10/warren/internal/score"
 )
@@ -34,9 +35,14 @@ func main() {
 	analyse := flag.Bool("analyse", false, "compare features of ring-bearing candidates against ordinary ones")
 	trainFraction := flag.Float64("train-fraction", 0.7, "share of the ledger's time span used to fit the ranker")
 	features := flag.String("features", string(detect.DefaultFeatureSet),
-		"which feature set the ranker sees: \"base\" for the nine shape-and-money\n"+
-			"features, \"temporal\" to add burstiness, hour concentration and\n"+
-			"forwarding speed. Run both to measure what the temporal ones are worth.")
+		"which feature set the ranker sees: \"base\" is the nine shape-and-money\n"+
+			"features, \"temporal\" adds burstiness, hour concentration and forwarding\n"+
+			"speed, \"anomaly\" adds an isolation forest score, \"registry\" adds the\n"+
+			"share of accounts on a simulated suspect list, \"all\" is everything.\n"+
+			"Run two and compare: that is the only way to know a feature is worth it.")
+	forestTrees := flag.Int("forest-trees", forest.DefaultOpts().Trees,
+		"trees in the isolation forest used by the anomaly feature")
+	forestSeed := flag.Int64("forest-seed", forest.DefaultOpts().Seed, "isolation forest seed")
 	withRegistry := flag.Bool("registry", false,
 		"simulate a shared suspect-account list (I4C-style) and give the ranker the\n"+
 			"share of each group's accounts already on it. Implies -features registry.")
@@ -92,14 +98,18 @@ func main() {
 	detectWall := time.Since(start)
 	log.Printf("detected %d candidate rings in %s", len(candidates), detectWall.Round(time.Millisecond))
 
-	var reg *registry.Registry
 	set := detect.FeatureSet(*features)
+	needsForest := set == detect.FeatureSetAnomaly || set == detect.FeatureSetAll
+
+	var reg *registry.Registry
 	if *withRegistry {
 		reg = registry.Simulate(led, registry.SimOpts{
 			Coverage: *regCoverage, ReportDelay: *regDelay,
 			FalseRate: *regFalse, Seed: *regSeed,
 		})
-		set = detect.FeatureSetRegistry
+		if set != detect.FeatureSetAll {
+			set = detect.FeatureSetRegistry
+		}
 		log.Printf("simulated suspect registry: %d accounts listed, %.0f%% coverage, "+
 			"%s mean reporting delay, %.0f%% false reports",
 			reg.Size(), 100**regCoverage, *regDelay, 100**regFalse)
@@ -118,6 +128,19 @@ func main() {
 	cut := detect.SplitTime(led, *trainFraction)
 	train, test := detect.Split(candidates, cut)
 	trainLabels := detect.Labels(led, train)
+
+	if needsForest {
+		// Fitted on the fitting split only. The forest takes no labels, but it
+		// still learns the shape of the candidate population, and letting it
+		// see the held-out period is letting "ordinary" be defined by the very
+		// window it is about to be judged on.
+		start := time.Now()
+		forest.Annotate(train, candidates, forest.Opts{
+			Trees: *forestTrees, SampleSize: forest.DefaultOpts().SampleSize, Seed: *forestSeed})
+		train, test = detect.Split(candidates, cut)
+		log.Printf("isolation forest: %d trees over %d fitting candidates in %s",
+			*forestTrees, len(train), time.Since(start).Round(time.Millisecond))
+	}
 	testLabels := detect.Labels(led, test)
 
 	pos := 0
