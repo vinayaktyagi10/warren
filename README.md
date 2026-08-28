@@ -51,7 +51,14 @@ put near-duplicates of the same ring on both sides of the split.
 | 250 | 76/182 | 7.29% | 46.65% | 31.04bn |
 | 1,000 | 108/182 | 3.55% | 59.63% | 74.91bn |
 
-14.3% at 50 alerts against a 0.1% base rate is roughly **140× lift**.
+14.32% at 50 alerts is **~22× lift** against the **0.64%** laundering rate of the
+ACH-filtered, active-period ledger the ranker actually scores. That is the figure
+to quote. Against the **0.1019%** rate of the *raw* 5.08m-row ledger the same
+precision reads as ~140×, but that denominator credits the ranker with the
+channel filter's work: filtering to ACH drops 88% of the ledger while keeping
+86.6% of the laundering, and most of the gap between the two multiples is that
+step rather than the ranking. State the population the multiple is measured
+against, or the number means nothing.
 
 Recall is reported per ring shape, because one average hides a shape the
 detector never finds. At 1,000 alerts: CYCLE 70.8, SCATTER-GATHER 70.8, STACK
@@ -279,8 +286,9 @@ DECISIONS.md       every non-obvious choice, with the rejected alternative
 
 ## Known weaknesses, owned
 
-- **14.3% precision at 50 alerts.** Defensible — 140× lift, and production AML
-  often runs lower — but not impressive. The detector is deliberately the least
+- **14.3% precision at 50 alerts.** Defensible — ~22× lift over the 0.64% base
+  rate of the population it scores, and production AML often runs lower — but not
+  impressive. The detector is deliberately the least
   clever part of this system: given a fixed budget it was spent on making a
   wrong answer safe rather than on making the answer marginally righter, because
   in payments the second is what loses money.

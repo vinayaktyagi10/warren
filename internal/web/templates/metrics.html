@@ -39,7 +39,19 @@
     <div class="section-note">
       The value-held column is deliberately blunt. Catching more rings means holding more
       legitimate money, and quoting recall without that cost would be dishonest. Precision
-      at the top of the queue runs roughly 100× the 0.1% base rate in the raw ledger.
+      at the top of the queue runs roughly {{printf "%.0f" .Lift}}× the {{pct3 .BaseRate}} laundering
+      rate of the population being evaluated — the ACH-filtered ledger over its active
+      period, which is what the ranker is given and what it is scored on. Both halves are
+      computed from this run.
+    </div>
+    <div class="section-note">
+      That denominator is deliberate. The raw ledger, before the channel filter, runs
+      nearer 0.1% laundering, and dividing this same precision by <em>that</em> rate
+      returns a multiple several times larger. It would not be a measure of the ranker:
+      restricting to ACH already removes 88% of the ledger while keeping 86.6% of the
+      laundering, so most of the difference between the two multiples is the filtering
+      stage, not the ranking. A lift figure means nothing without the population it was
+      measured against, and this one is stated against the population being evaluated.
     </div>
   </div>
 
@@ -66,7 +78,15 @@
       <div class="section-note">
         Reported per shape rather than as one average, which would have hidden that STACK
         and BIPARTITE are barely found while every other shape clears 90%. They are the
-        largest and loosest structures, and the most likely to straddle a window boundary.
+        largest and loosest structures, and the two misses have different causes. STACK
+        straddles the window: 17 of its 32 rings run longer than the 72h pass can see at
+        once. BIPARTITE fails earlier than the ranker — a labelled BIPARTITE ring is a
+        set of <em>disconnected</em> one-transfer sender→receiver pairs, and a candidate
+        requires three accounts, so each pair is dropped and the ring never becomes a
+        candidate to rank. Four corroborated linking rules and two partition features
+        were built and measured against it; none recovered a single additional ring, and
+        every one cost overall recall. Whether some other signal could bind those pairs
+        is open — this data does not appear to carry one. See docs/FINDINGS.md §19–§21.7.
       </div>
     </div>
 
@@ -86,7 +106,7 @@
       </table>
       <div class="section-note">
         Logistic regression over standardised features, so the coefficients are directly
-        comparable. A linear model was chosen over an ensemble deliberately: with nine
+        comparable. A linear model was chosen over an ensemble deliberately: with {{len .Weights}}
         features the accuracy gain is small, and coefficients state exactly what the model
         believes — which is what has to be defended when the system asks to hold money.
       </div>

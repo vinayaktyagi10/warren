@@ -1427,3 +1427,159 @@ and it is now understood: **the ring supplies two accounts where a candidate
 requires three, and none of the relationships measured here supplied a third.**
 That is a limit established by measurement on this dataset, not a proof that no
 such relationship exists — a field this data lacks could still supply one.
+
+---
+
+# 21. Demo-workflow validation (2026-08-29)
+
+The detector and the web-test work were both frozen before this pass. The
+question here was narrower and entirely operational: can a judge walk the whole
+system end to end, and does every number the console shows agree with the number
+the project measured? Four things did not survive the walk.
+
+## 21.1 The hero case was chosen by Go's map seed
+
+`pickHero` builds its eligible set by ranging `map[int32][]*detect.Txn` and then
+sorts by transfer count alone:
+
+```go
+sort.Slice(eligible, func(i, j int) bool { return len(eligible[i].txns) > len(eligible[j].txns) })
+```
+
+`sort.Slice` is not stable, and the input order is map order, so **any tie at
+the top is broken by the map seed**. This is finding §11 — non-determinism
+reported as noise — in a second place. It hid the same way: on the IBM AML
+ledger ring 270 is the unique nine-transfer eligible case, so five consecutive
+restarts all opened on ring 270 and the picker looked deterministic.
+
+It is not. On the synthetic ledger the console's own tests run against, where
+several rings tie, two calls to `pickHero` inside one process returned **ring 28
+and then ring 26**. The console would open on a different case per restart the
+moment the real ledger produced a tie, and the demo runbook names the case.
+
+Fixed by sorting on a total order — most transfers first, then lowest ring id,
+the same tie-break `detect.RankOrder` already applies to candidate ordering.
+`TestTheHeroCaseIsTheSameOneEveryRun` calls the picker 26 times in one process
+and fails on the old code.
+
+**No published number changes.** The hero case is a console display; it is not
+an input to detection, ranking or evaluation.
+
+## 21.2 The enforcement queue could not tell the two model tiers apart
+
+`/holds` rendered the answering tier through the template helper `short`, which
+truncates to 16 characters. `gemini:gemini-3.7-flash` and
+`gemini:gemini-3.5-flash-lite` both truncate to `gemini:gemini-3.`
+
+The fallback chain is the thing that page exists to demonstrate, and the column
+that names which tier answered was rendering every tier identically. The audit
+page had it right — `{{.Source}}`, in full — so the fix is to do the same on the
+holds page. The helper had no other call site and is gone.
+
+## 21.3 The performance page contradicted its own tables
+
+Two figures were true of the `base` feature set and went stale when `temporal`
+landed, and both sat beside a table stating otherwise:
+
+- **"with nine features"** — twelve coefficients are listed directly above it.
+- **"roughly 100× the 0.1% base rate"** — the table beside it reports 14.32%
+  precision at 50 alerts.
+
+Both are now derived from the run rather than written in prose. The feature
+count is `{{len .Weights}}`. The lift is precision at 50 alerts over the
+ledger's own laundering rate, computed in `handleMetrics`.
+
+Deriving it exposed an arithmetic confusion in the original claim. The console's
+ledger is already ACH-filtered and trimmed to the active period, and laundering
+in *that* population is **0.64%**, not 0.10%. The honest in-population lift is
+therefore **~22×**, not 100× or 140×; the larger multiples measure the channel
+filter's work together with the detector's. The page now quotes 22× against
+0.64% and says in one line that the raw-ledger multiple is several times larger
+and is not the one being claimed. See `DECISIONS.md`, 2026-08-29.
+
+## 21.4 The page named the wrong cause for BIPARTITE
+
+`/metrics` attributed both STACK and BIPARTITE to being "the largest and
+loosest structures, and the most likely to straddle a window boundary". That is
+right for STACK — 17 of 32 rings run longer than 72h — and **wrong for
+BIPARTITE**, which §19 established is a connectivity problem: the labelled ring
+is a set of disjoint sender→receiver pairs and never forms a candidate at all.
+The page now states the two causes separately and points at §19–§20.
+
+## 21.5 What the walk confirmed rather than changed
+
+- **Case A, permitted action.** Enforcement rank 4 (3 accounts, 257.2k, score
+  0.968) received a model `block`, cleared every gate, and froze three accounts
+  under decision 8, expiring exactly 24h later, each lease naming its decision.
+- **Case B/D, the ceiling.** Analyst entries 1 and 3 (696M and 862M, scores
+  0.987/0.980) were proposed `block` and clamped to review on
+  `BlockMaxAmount`, with the reason recorded on the entry.
+- **Case C, the account limit.** Enforcement rank 7 (**59 accounts**, 5.8M,
+  score 0.963) was proposed `block`, the policy approved it, and the
+  enforcement layer declined the whole lease: *"declined to freeze: ring spans
+  59 accounts, above the 25-account limit on a single automated action"*.
+  `account_restrictions` holds **zero** rows for ring 100007 — no partial
+  freeze, nothing silently dropped.
+- **Tamper.** Editing entry 8 in place was caught, named the first break, and
+  `cmd/audit -verify` listed the three accounts still frozen on that entry's
+  authority and exited 1. The restriction chain stayed valid throughout, which
+  is what makes the join meaningful rather than a second copy of the same break.
+- **Degradation.** Observed unprompted at all three levels across this session:
+  503, 504, a client-side deadline, and finally **429 RESOURCE_EXHAUSTED** —
+  the free tier allows **20 `gemini-3.7-flash` requests per project per day**,
+  and validation exhausted it. Every one fell through to `gemini-3.5-flash-lite`
+  and the request still returned a bounded decision. `-offline` reaches the
+  deterministic rule, which held and **froze nothing**, on both routes.
+
+## 21.6 The one thing the demo cannot promise
+
+An autonomous freeze is **model-dependent and not reproducible on demand**. The
+deterministic rule never blocks, by design, so `-offline` can never freeze. With
+the primary model available, seeding froze 3 accounts; with it rate-limited and
+`gemini-3.5-flash-lite` answering instead, the same four enforcement alerts all
+came back `hold_for_review` and froze nothing. The policy behaved identically in
+both runs — what changed was the proposal it was given.
+
+This is a property of "the model proposes, the policy disposes", not a defect:
+the system cannot guarantee a block because a block requires a model to ask for
+one. The runbook says so rather than promising the freeze.
+
+
+## 21.7 The BIPARTITE conclusion, stated in three parts
+
+The three claims below are of different kinds and are quoted together, because
+collapsing them is how the honest version turns into an overclaim.
+
+**Measured finding.** A labelled BIPARTITE ring is a set of *disconnected*
+one-transfer sender→receiver pairs: median 4 components with a largest component
+of 1, where every other typology forms a single component. `detect.Config`
+requires `MinAccounts = 3` (and `MinTxns`), so each pair fails candidate
+construction on its own and the ring never becomes a candidate at all. This is
+observation, not inference — §19.
+
+**Measured experiment.** Four corroborated linking hypotheses — timing, amount
+band, bank pair, shared counterparty — plus two candidate-level partition
+features were built and measured. **None recovered a single additional
+BIPARTITE ring.** The best two left recall at exactly 17/45; every one reduced
+overall graph recall and inflated the largest component, from 3,220 accounts to
+between 5,558 and 48,172. §20.
+
+**Interpretation.** The most economical explanation is that this transaction
+data carries no independent binding signal that would safely aggregate the
+pairs — nothing playing the role that an IP, device, beneficiary name or session
+plays elsewhere, and that `graph.MinCorroboration` exists to demand. This is a
+*reading* of the measurements, not one of them. In particular:
+
+- It is **not** established that the simulator deliberately omitted such a
+  covariate. That would explain the result, and §20.8 offers it as one candidate
+  explanation, but it is not falsifiable from inside the dataset and is not
+  claimed as fact.
+- It is **not** established that a BIPARTITE-recovering representation is
+  impossible. What was measured is that the hypotheses tested here did not find
+  one, at a cost the rest of the detector could not absorb. A dataset carrying a
+  corroborating field this one lacks would reopen the question, and the
+  architecture already has the mechanism to use it.
+
+The claim being made is therefore narrow: **on this data, with these
+hypotheses, no linking rule recovered BIPARTITE without damaging everything
+else.** That is why the detector was left unchanged.

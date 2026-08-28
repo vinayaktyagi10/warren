@@ -746,3 +746,62 @@ rejected, a reader is owed the best available explanation for six dead
 hypotheses.
 **My answer before seeing yours:** n/a — autonomous session, no pause requested.
 
+## 2026-08-28 — Split the console's pipeline preparation from its ledger read
+**Chose:** extract `prepareFrom(led, typologies, trainFraction)` out of
+`Server.prepare`, leaving `prepare` as the database read plus a call to it, and
+drive the console's tests through `prepareFrom` with a ledger built in memory.
+Model tiers in those tests are small `agent.Assessor` implementations behind the
+real `agent.Chain` and the real `agent.Policy`.
+**Why:** `web.New` cannot be called by a test — it loads five million rows
+before it does anything else — so the handlers were the largest untested surface
+in the project. The split is ten lines moved and no behaviour change, and it
+means the tests exercise the real detector, the real ranker, the real evaluation
+and the real policy clamp over a small ledger, rather than a stand-in for any of
+them. Only the two things a test cannot supply — the ledger read and the label
+table — are on the other side of the seam. Faking the chain instead would have
+put the policy envelope, which is the part worth protecting, inside the fake.
+**Alternative considered:** (A) seed a synthetic AML dataset into a `dbtest`
+schema and call the real `web.New` — rejected, it makes every console test
+require Postgres to exercise arithmetic that needs none, and leaves the test
+depending on tiny-ledger detection happening to produce a non-empty train and
+test split. (B) build the `Server` struct directly in an in-package test file
+with no production change — rejected, it restates thirty lines of `prepare` and
+the copy drifts silently the first time `prepare` changes.
+**My answer before seeing yours:** C — extract `prepareFrom`. (Vinayak chose the
+same; the pause was asked and answered before implementation.)
+
+## 2026-08-29 — Quote the lift over the population the detector works on
+**Chose:** The performance page derives its headline lift from the run —
+precision at 50 alerts over the laundering rate of the ACH-filtered ledger the
+console holds — and states it as **~22× over 0.64%**, with one line saying the
+raw-ledger multiple is several times larger and is deliberately not the number
+being claimed.
+**Why:** The page said "roughly 100×", which belonged to the `base` feature set
+and sat beside a table reporting the `temporal` set's 14.32%. Deriving it stops
+that drift permanently. Deriving it also exposed that the familiar 100×/140×
+multiples divide a post-filter precision by a pre-filter base rate: the channel
+filter drops 88% of the ledger while keeping 86.6% of the laundering, so most
+of that multiple is the filter's work, not the ranker's. Quoting 22× is the
+conservative reading and the one that survives being asked how it was computed.
+**Alternative considered:** Keep the raw-ledger framing and simply correct 100×
+to 140×. Rejected because it fixes the arithmetic while leaving the
+population mismatch, and 140× is the flattering framing of the same measurement.
+The precision figure itself (14.32% at 50 alerts) is unchanged either way; only
+what it is stated as a multiple *of* has changed.
+**My answer before seeing yours:** n/a — this surfaced mid-validation while
+fixing a stale number, and was implemented before it could be raised. It is
+flagged for review: reverting to "140× the 0.1% raw base rate" is a one-line
+template change if the pitch should keep the larger figure.
+
+## 2026-08-29 — Break hero-case ties on ring id, not on the map seed
+**Chose:** `pickHero` sorts by transfer count and then by lowest ring id.
+**Why:** The eligible set is built by ranging a map and `sort.Slice` is
+unstable, so any tie at the top was resolved by Go's map seed — the console
+would open on a different case per restart, and the runbook names the case.
+Caught on the synthetic ledger, where two calls in one process returned ring 28
+then ring 26. This is the same defect as FINDINGS §11 in a second place.
+**Alternative considered:** `sort.SliceStable`. Rejected because it preserves
+input order and the input order is the map's — stability over a random
+permutation is still random. A total order is the only fix.
+**My answer before seeing yours:** n/a — mechanical application of the tie-break
+rule `detect.RankOrder` already establishes, so no pause was taken.

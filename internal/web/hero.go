@@ -171,7 +171,17 @@ func (s *Server) pickHero() (int32, []*detect.Txn) {
 	if len(eligible) == 0 {
 		return 0, nil
 	}
-	sort.Slice(eligible, func(i, j int) bool { return len(eligible[i].txns) > len(eligible[j].txns) })
+	// Most transfers first, then lowest ring id. The second half is not a
+	// tie-break for tidiness: eligible is built by ranging a map, so ordering on
+	// transfer count alone leaves every tie at the top to Go's map seed, and the
+	// console would open on a different case each restart. Sorting on a total
+	// order is the same fix RankOrder already applies to candidate ordering.
+	sort.Slice(eligible, func(i, j int) bool {
+		if len(eligible[i].txns) != len(eligible[j].txns) {
+			return len(eligible[i].txns) > len(eligible[j].txns)
+		}
+		return eligible[i].id < eligible[j].id
+	})
 	return eligible[0].id, eligible[0].txns
 }
 

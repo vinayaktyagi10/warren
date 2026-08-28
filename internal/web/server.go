@@ -87,6 +87,14 @@ type Server struct {
 	heroPattern   int32
 	heroTxns      []*detect.Txn
 
+	// baseRate is the share of the ledger labelled laundering, held so the
+	// performance page can state the lift it achieves over it rather than
+	// carrying a number in prose that goes stale the next time the feature set
+	// changes. It already did once: the page claimed 100x, which belonged to the
+	// base feature set, while the table beside it showed the temporal set's
+	// 14.32%.
+	baseRate float64
+
 	mu         sync.RWMutex
 	decided    map[int]agent.Assessment
 	preparedAt time.Time
@@ -104,24 +112,17 @@ type enforcePass struct {
 	limits     enforce.Limits
 }
 
-// New builds the server, running the whole pipeline once.
-func New(ctx context.Context, pool *pgxpool.Pool, cfg detect.Config,
-	chain *agent.Chain, auditLog *audit.Log, holds *enforce.Store,
-	trainFraction float64) (*Server, error) {
-
+// parseTemplates builds the console's template set. It is a function rather
+// than inline in New so that a test can render the same pages the operator
+// sees, through the same helpers, without going near the pipeline.
+func parseTemplates() (*template.Template, error) {
 	funcs := template.FuncMap{
-		"pct":   func(f float64) string { return fmt.Sprintf("%.1f%%", 100*f) },
-		"pct3":  func(f float64) string { return fmt.Sprintf("%.2f%%", 100*f) },
-		"money": money,
-		"num":   humanInt,
-		"f2":    func(f float64) string { return fmt.Sprintf("%.2f", f) },
-		"f3":    func(f float64) string { return fmt.Sprintf("%.3f", f) },
-		"short": func(s string) string {
-			if len(s) > 16 {
-				return s[:16]
-			}
-			return s
-		},
+		"pct":         func(f float64) string { return fmt.Sprintf("%.1f%%", 100*f) },
+		"pct3":        func(f float64) string { return fmt.Sprintf("%.2f%%", 100*f) },
+		"money":       money,
+		"num":         humanInt,
+		"f2":          func(f float64) string { return fmt.Sprintf("%.2f", f) },
+		"f3":          func(f float64) string { return fmt.Sprintf("%.3f", f) },
 		"upper":       func(s string) string { return template.HTMLEscapeString(s) },
 		"actionClass": actionClass,
 		"dur":         latency.Short,
@@ -130,6 +131,18 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg detect.Config,
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(content, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
+	}
+	return tmpl, nil
+}
+
+// New builds the server, running the whole pipeline once.
+func New(ctx context.Context, pool *pgxpool.Pool, cfg detect.Config,
+	chain *agent.Chain, auditLog *audit.Log, holds *enforce.Store,
+	trainFraction float64) (*Server, error) {
+
+	tmpl, err := parseTemplates()
+	if err != nil {
+		return nil, err
 	}
 
 	s := &Server{
@@ -144,15 +157,38 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg detect.Config,
 	return s, nil
 }
 
-// prepare runs detection, ranking and evaluation.
+// prepare reads the ledger and the ring labels, then prepares from them.
+//
+// The read is split from the preparation because they fail for different
+// reasons and are exercised differently: loading is a query against five
+// million rows, and everything after it is arithmetic over whatever ledger it
+// returned. prepareFrom is what the console's tests drive, over a small ledger
+// built in memory, so the handlers under test run on the real detector, the
+// real ranker and the real evaluation rather than on stand-ins for them.
 func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	start := time.Now()
-
 	led, err := detect.Load(ctx, s.pool, s.cfg)
 	if err != nil {
 		return fmt.Errorf("load ledger: %w", err)
 	}
 	led = detect.Trim(led, detect.ActivePeriod(led.Txns))
+	// Logged separately from the preparation below, because the read is most of
+	// the wall clock and the two numbers used to be reported as one.
+	log.Printf("loaded ledger in %s", time.Since(start).Round(time.Millisecond))
+
+	typologies, err := loadTypologies(ctx, s.pool)
+	if err != nil {
+		return err
+	}
+	return s.prepareFrom(led, typologies, trainFraction)
+}
+
+// prepareFrom runs detection, ranking and evaluation over a loaded ledger.
+func (s *Server) prepareFrom(led *detect.Ledger, typologies map[int32]string,
+	trainFraction float64) error {
+
+	start := time.Now()
+
 	s.ledger = led
 	log.Printf("ledger: %d transfers", len(led.Txns))
 
@@ -160,10 +196,16 @@ func (s *Server) prepare(ctx context.Context, trainFraction float64) error {
 	for i := range led.Txns {
 		s.txnByID[led.Txns[i].ID] = &led.Txns[i]
 	}
+	s.typologies = typologies
 
-	s.typologies, err = loadTypologies(ctx, s.pool)
-	if err != nil {
-		return err
+	laundering := 0
+	for i := range led.Txns {
+		if led.Txns[i].IsLaundering {
+			laundering++
+		}
+	}
+	if len(led.Txns) > 0 {
+		s.baseRate = float64(laundering) / float64(len(led.Txns))
 	}
 
 	detectStart := time.Now()
@@ -790,14 +832,32 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(shapes, func(i, j int) bool { return shapes[i].Rate > shapes[j].Rate })
 
 	s.render(w, "metrics.html", map[string]any{
-		"Title":   "Measured performance",
-		"Nav":     "metrics",
-		"Shapes":  shapes,
-		"Budgets": s.budgetRows(),
-		"Report":  s.report,
-		"Weights": s.modelWeights(),
-		"Latency": s.latency,
+		"Title":    "Measured performance",
+		"Nav":      "metrics",
+		"Shapes":   shapes,
+		"Budgets":  s.budgetRows(),
+		"Report":   s.report,
+		"Weights":  s.modelWeights(),
+		"Latency":  s.latency,
+		"BaseRate": s.baseRate,
+		"Lift":     s.liftAt(50),
 	})
+}
+
+// liftAt reports how many times the precision at a given alert budget exceeds
+// the ledger's own laundering rate. Stating it as a computed ratio rather than
+// prose is the point: the multiple is the headline claim, and it moves whenever
+// the feature set does.
+func (s *Server) liftAt(budget int) float64 {
+	if s.baseRate <= 0 {
+		return 0
+	}
+	for _, row := range s.ranked.Rows {
+		if row.TopK == budget {
+			return row.PrecisionAt / s.baseRate
+		}
+	}
+	return 0
 }
 
 // budgetRow is one point on the alert-budget curve: what a team gets, and what

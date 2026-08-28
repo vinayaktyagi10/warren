@@ -37,10 +37,11 @@ func main() {
 		"decide this many top alerts from the narrow enforcement pass at startup;\n"+
 			"these are the ones that can lease. 0 disables")
 	blockCeiling := flag.Float64("block-ceiling", agent.DefaultPolicy().BlockMaxAmount,
-		"largest total a ring may move and still be blocked without a person; every\n"+
-			"high-scoring ring in the IBM AML ledger moves far more than the real-world\n"+
-			"default, so raising this is the only way to exercise the autonomous freeze\n"+
-			"path on this data at all")
+		"largest total a ring may move and still be blocked without a person. The\n"+
+			"default is reachable as it stands: the 24h/6h enforcement pass raises rings\n"+
+			"moving tens of thousands to a few million, and blocks them autonomously.\n"+
+			"Raising this only forces the 72h/24h analyst pass to block, which is not\n"+
+			"something to want — and that pass leases nothing either way")
 	envFile := flag.String("env", ".env", "file to read GEMINI_API_KEY from")
 	flag.Parse()
 

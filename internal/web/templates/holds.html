@@ -126,7 +126,7 @@
           <td class="small">
             {{if .Decision}}
               <span class="shape {{actionClass .Decision}}">{{.Decision}}</span>
-              <span class="muted mono">{{short .Source}}</span>
+              <span class="muted mono">{{.Source}}</span>
             {{else}}<span class="muted">&mdash;</span>{{end}}
           </td>
           <td class="num mono">{{if gt .Held 0}}{{.Held}}{{else}}<span class="muted">0</span>{{end}}</td>
