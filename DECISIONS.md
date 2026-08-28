@@ -582,3 +582,167 @@ whole purpose is to be unambiguous later is not cosmetic.
 but it changes what the hash covers and invalidates every entry already written,
 which §"two hash chains" already refused once for the same reason.
 **My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-28 — Diagnose the bipartite hole before building for it
+**Chose:** probe how labelled BIPARTITE rings actually reach the candidate set
+before writing a single feature, and let the probe decide what gets built.
+**Why:** the recorded diagnosis — that `conservation`, `pass_through` and
+`fast_forward` are zero on bipartite groups and therefore cannot reach the shape
+— turned out to be two claims welded together, one true and one false. All three
+features really are exactly zero on all 5,297 candidates `classify` names
+BIPARTITE, without one exception. But **not one held-out candidate in that
+population carries a labelled ring**, and the candidates that do cover a
+BIPARTITE ring are MIXED, with *higher* conservation and pass-through than other
+ring-bearing candidates. Building a feature on the recorded diagnosis would have
+been building for a population that contributes nothing to the number being
+fixed. The actual cause is that a labelled BIPARTITE ring is N disjoint
+sender→receiver pairs — median 4 transfers in 4 components, largest component 1
+— so a detector that groups by connectivity has nothing to group.
+**Alternative considered:** implement the obvious feature list (degree symmetry,
+partition entropy, edge concentration) straight from the brief and measure after
+— rejected; it would have produced the same rejection three days later with no
+explanation attached, and the explanation is the deliverable.
+**My answer before seeing yours:** the structural limitation is the primary
+deliverable; verify the zero-features claim, verify the experimental population
+is tiny, run the ranking experiment once as a sanity check without tuning, and
+treat any result as exploratory rather than as grounds to change the ranker.
+
+## 2026-08-28 — Three bipartite features, each in its own feature set
+**Chose:** `partition_balance`, `pair_reuse` and `amount_uniformity`, exposed as
+`bip-balance`, `bip-reuse`, `bip-uniform` and `bipartite` — four sets, each
+extending `temporal` in place, rather than one set carrying all three.
+**Why:** a bundled set can only ever answer "did these three together help",
+and the answer here would have been "yes" for a reason that has nothing to do
+with bipartite structure. Split into arms, the ablation says that the two
+features actually built for the two partitions did nothing and the bystander did
+everything, which is a different and much more useful finding. This is the same
+reason §5 gives for every feature having a set: a feature nobody can run the
+pipeline without is a feature nobody can ever measure.
+**Alternative considered:** add all three to the existing `all` set — rejected,
+`all` carries a published number (113 rings at 1,000 alerts, §17) and widening
+it would silently restate that number as a measurement of something else. A
+generic "any subset of features" flag — rejected, it makes every published set
+name unstable and there are four arms, not forty.
+**My answer before seeing yours:** n/a — the feature list was left to me once
+the diagnosis was settled.
+
+## 2026-08-28 — Reject both bipartite features on the measurement
+**Chose:** `partition_balance` and `amount_uniformity` are rejected and the
+shipped default stays `temporal`.
+**Why:** `partition_balance` fits at −0.090 and leaves BIPARTITE recall at
+exactly 25.0%, costs a ring overall and four points of FAN-OUT. `amount_uniformity`
+fits at −0.220 — negative, which already contradicts the hypothesis that
+motivated it — leaves BIPARTITE at 25.0%, costs two rings and five points of
+STACK. The feature aimed most directly at the two partitions did nothing for the
+shape defined by them, and that null result is the evidence for the structural
+conclusion. Keeping either because some other number improved would be keeping a
+feature for a reason unrelated to why it was built.
+**Alternative considered:** keep `partition_balance` on the +0.9pt precision at
+50 alerts — rejected, precision at one budget against a ring lost at 1,000 and a
+regressed typology is choosing the flattering budget after seeing the numbers,
+which §"comparisons hold total alert budget constant" already refused once.
+**My answer before seeing yours:** treat any result as exploratory, not as
+evidence for changing the production ranker.
+
+## 2026-08-28 — `pair_reuse` is reported, not adopted
+**Chose:** `pair_reuse` stays behind `-features bip-reuse`; `temporal` remains
+the default despite `pair_reuse` producing the largest single-feature effect
+ever measured here — coefficient −0.922, precision at 50 alerts 14.32% → 24.10%,
+seven more rings at 1,000, 6.9bn less innocent value held, no typology regressed.
+**Why:** it is not the feature under test. It measures edge concentration, not
+bipartite structure, and it moved BIPARTITE by one ring out of sixteen — inside
+the noise, since seven of those sixteen held-out rings are a single transfer.
+Its mechanism ("a ring spends each relationship once") may be a property of the
+simulator rather than of laundering, and nothing measured here separates the
+two. It absorbs `density` (−0.432 → −0.117, r = +0.732) and `log_accounts`
+(+0.367 → +0.066), so part of the gain is re-attribution. And it was produced by
+a single exploratory run that was set up as a sanity check, which is the exact
+circumstance under which this project has been wrong five times.
+**Alternative considered:** adopt it as the default and lead with 24.10%
+precision at 50 alerts — rejected; it is the best number in the project and it
+arrived by accident, on synthetic data, from a run nobody designed to test it.
+Delete it as off-topic — rejected, a measured effect that large is worth leaving
+runnable with its caveats attached, the same way `-features anomaly` keeps a
+negative result runnable.
+**My answer before seeing yours:** run it once as a sanity check, without tuning
+around it, and treat the result as exploratory.
+
+## 2026-08-28 — Test the linking hypotheses in a harness, not in the detector
+**Chose:** a separate measurement harness whose baseline arm reproduces
+`detectWindow` exactly, rather than putting the candidate rules behind a flag in
+the production detector.
+**Why:** the question is whether any second-order link is *safe*, and the honest
+way to ask it is one where a wrong answer cannot reach the shipped path. A flag
+on `detect.Config` would have meant every hypothesis lived in the file that
+carries the published numbers, one default away from changing them. The
+harness's baseline reproducing 95,318 candidates / 270 rings / 0.18% purity /
+BIP 17/45 / STACK 13/40 is what makes its other arms believable; without that
+check the arms would be measuring a reimplementation.
+**Alternative considered:** add the rules to `internal/detect` behind a config
+field — rejected for the above, and because the answer turned out to be C, which
+would have left four dead rules permanently in the production file. Measure on a
+sample of windows for speed — rejected, the giant-component behaviour is exactly
+what a sample would miss.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-28 — Require a matched control for every structural claim
+**Chose:** every property of the BIPARTITE rings is reported beside the same
+property measured on random transfers drawn from the same window and matched in
+group size.
+**Why:** "the amounts inside a ring are similar" and "the transfers are close in
+time" are both true and both worthless, because they are true of any N transfers
+drawn from a 72h window. The control is what turned the timing observation from
+a lead into a rejection (34.3h span against the control's 46.7h — a difference,
+but nowhere near enough to link on) and what killed the shared-counterparty
+hypothesis outright, since the control shares counterparties *more often* than
+the rings do (44.8% against 24.1%). Four of the six hypotheses in the brief die
+on the control alone.
+**Alternative considered:** compare BIPARTITE rings against other typologies
+only — rejected; the other typologies are connected, so every difference would
+be explained by connectivity and nothing would be learned about linkability.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-28 — (C) Candidate construction is not altered
+**Chose:** no change to linking, to candidate construction, or to the detector.
+BIPARTITE stays at 17/45 at the graph pass and 25.0% at 1,000 alerts.
+**Why:** four corroborated hypotheses were measured end to end and not one
+improved BIPARTITE recall — the best two left it at exactly 17/45 and the other
+two lowered it. All four cost overall graph recall (270 rings down to as low as
+190) and damaged every other typology. All four inflated the largest component,
+from 3,220 accounts to between 5,558 and 48,172; the uncorroborated timing form
+reaches 101,334 in a single window, which is trap 2 at 11× scale. The mechanism
+is that the ring's own pairs sit 12.5h apart at the median with amounts spread
+16.7×, so a rule tight enough to be safe never joins them, while a rule loose
+enough to join them sweeps in tens of thousands of accounts and the
+`MaxAccounts` cap then discards the result — 27 of 45 rings in the two tighter
+arms. Both horns are measured, which is what makes this a conclusion rather than
+a failure to find a setting.
+**Alternative considered:** (A) a narrowly defined additional relationship —
+rejected, no relationship was found that separates the rings from a random
+control on any axis, including the structural one. (B) a separate two-part
+candidate representation — rejected *for this dataset*, not in principle: the
+representation is described in §20.8 and is perfectly buildable, but it needs
+binding evidence to aggregate across the disconnected components and §20.7
+measures every available binding at or below the level of randomly chosen
+transfers. Tuning a tolerance until BIPARTITE moved — rejected, that is choosing
+a setting after seeing the number, and the giant-component cost was rising
+monotonically the whole way.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+
+## 2026-08-28 — Record that these rings may be unlearnable, as a reading not a finding
+**Chose:** state in §20.8 that IBM AML may assign BIPARTITE pairs without any
+shared covariate, making the ring identifiable only by its label — and mark it
+explicitly as a reading rather than a measured finding.
+**Why:** it is the explanation most consistent with every number here: amounts
+distinct within every ring, sender entities as distinct as the control's to
+three decimals, shared counterparties *rarer* than the control. But it cannot be
+falsified from inside the dataset — proving a relationship absent needs the
+generator's source, not the generated ledger. Writing it as a finding would be
+claiming a certainty the method cannot produce; leaving it out would omit the
+most likely reason the section came out empty.
+**Alternative considered:** assert it as the conclusion — rejected, unfalsifiable
+from the available evidence. Omit it and report only the null results —
+rejected, a reader is owed the best available explanation for six dead
+hypotheses.
+**My answer before seeing yours:** n/a — autonomous session, no pause requested.
+

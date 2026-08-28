@@ -135,6 +135,15 @@ type Features struct {
 	MaxHourShare float64
 	FastForward  float64
 
+	// The bipartite features, described in bipartite.go. They exist because
+	// Conservation, PassThroughRatio and FastForward are all defined over
+	// accounts that both receive and send, and are therefore exactly zero on
+	// every group that has none. Like the temporal features they are computed
+	// always and read only by the sets that declare them.
+	PartitionBalance float64
+	PairReuse        float64
+	AmountUniformity float64
+
 	// RegistryShare is the fraction of the group's accounts already on a
 	// suspect-account list when this window closed. Filled by
 	// internal/registry, not by the detector — detection stays independent of
@@ -459,9 +468,24 @@ const (
 	// internal/forest to have annotated the candidates.
 	FeatureSetAnomaly FeatureSet = "anomaly"
 
-	// FeatureSetAll is every feature at once, for the run that says whether
-	// the registry and the forest are measuring the same thing.
+	// FeatureSetAll is every shipped feature at once, for the run that says
+	// whether the registry and the forest are measuring the same thing. The
+	// experimental bipartite sets below are deliberately outside it: "all"
+	// carries a published number, and widening it would silently restate that
+	// number as a measurement of something else.
 	FeatureSetAll FeatureSet = "all"
+
+	// The bipartite sets are experimental and each adds exactly one feature to
+	// the temporal baseline, so the ablation says which of the three carried
+	// anything rather than only whether the bundle did. They are kept after
+	// being measured, because a feature nobody can run the pipeline without is
+	// a feature nobody can ever measure again — including a rejected one.
+	FeatureSetBipBalance FeatureSet = "bip-balance"
+	FeatureSetBipReuse   FeatureSet = "bip-reuse"
+	FeatureSetBipUniform FeatureSet = "bip-uniform"
+
+	// FeatureSetBipartite carries all three at once.
+	FeatureSetBipartite FeatureSet = "bipartite"
 )
 
 // DefaultFeatureSet is what the console and the shipped defaults use.
@@ -488,13 +512,22 @@ func init() {
 	featureNames[FeatureSetAll] = append(
 		append([]string(nil), featureNames[FeatureSetRegistry]...),
 		"anomaly")
+
+	temporal := func() []string { return append([]string(nil), featureNames[FeatureSetTemporal]...) }
+	featureNames[FeatureSetBipBalance] = append(temporal(), "partition_balance")
+	featureNames[FeatureSetBipReuse] = append(temporal(), "pair_reuse")
+	featureNames[FeatureSetBipUniform] = append(temporal(), "amount_uniformity")
+	featureNames[FeatureSetBipartite] = append(temporal(),
+		"partition_balance", "pair_reuse", "amount_uniformity")
 }
 
 // Sets lists the selectable feature sets, for flag help and for tests that
 // must cover every one of them.
 func Sets() []FeatureSet {
 	return []FeatureSet{FeatureSetBase, FeatureSetTemporal,
-		FeatureSetRegistry, FeatureSetAnomaly, FeatureSetAll}
+		FeatureSetRegistry, FeatureSetAnomaly, FeatureSetAll,
+		FeatureSetBipBalance, FeatureSetBipReuse, FeatureSetBipUniform,
+		FeatureSetBipartite}
 }
 
 // FeatureNamesFor labels the coefficients of a model fitted on the given set.
@@ -533,6 +566,15 @@ func (f Features) VectorFor(set FeatureSet) []float64 {
 	}
 	if set == FeatureSetAnomaly || set == FeatureSetAll {
 		v = append(v, f.Anomaly)
+	}
+	if set == FeatureSetBipBalance || set == FeatureSetBipartite {
+		v = append(v, f.PartitionBalance)
+	}
+	if set == FeatureSetBipReuse || set == FeatureSetBipartite {
+		v = append(v, f.PairReuse)
+	}
+	if set == FeatureSetBipUniform || set == FeatureSetBipartite {
+		v = append(v, f.AmountUniformity)
 	}
 	return v
 }
@@ -588,6 +630,10 @@ func features(group []Txn, senders, receivers, accounts map[int32]bool) Features
 	f.Burstiness = burstiness(group)
 	f.MaxHourShare = maxHourShare(group)
 	f.FastForward = fastForward(group)
+
+	f.PartitionBalance = partitionBalance(senders, receivers, accounts)
+	f.PairReuse = pairReuse(group)
+	f.AmountUniformity = amountUniformity(group)
 	return f
 }
 

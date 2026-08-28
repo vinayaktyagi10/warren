@@ -39,6 +39,8 @@ func main() {
 			"features, \"temporal\" adds burstiness, hour concentration and forwarding\n"+
 			"speed, \"anomaly\" adds an isolation forest score, \"registry\" adds the\n"+
 			"share of accounts on a simulated suspect list, \"all\" is everything.\n"+
+			"\"bip-balance\", \"bip-reuse\", \"bip-uniform\" and \"bipartite\" are the\n"+
+			"experimental bipartite sets, each adding one feature to temporal.\n"+
 			"Run two and compare: that is the only way to know a feature is worth it.")
 	forestTrees := flag.Int("forest-trees", forest.DefaultOpts().Trees,
 		"trees in the isolation forest used by the anomaly feature")

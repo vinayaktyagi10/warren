@@ -912,3 +912,518 @@ one decision, which is what the value ceiling gates on.
 `-block-ceiling` stays, and stays a demonstration setting that logs loudly. It is
 now only needed to make the *analyst* pass block, which is not something anyone
 should want.
+
+---
+
+# 19. BIPARTITE is a disconnectedness problem, not a feature problem
+
+BIPARTITE has been the detector's worst shape since the first ranked
+measurement — 25.0% at 1,000 alerts, unmoved by the temporal features that took
+STACK from 42.1% to 68.4% (§15). This section is the investigation of why, and
+the measured rejection of the obvious fix.
+
+## The diagnosis that stood until now, and what was wrong with it
+
+§15 concluded that `conservation`, `pass_through` and `fast_forward` are
+"identically zero on every bipartite group that exists", because all three are
+defined over accounts that both receive and send and `classify` names a group
+BIPARTITE precisely when none does.
+
+**The first half is exactly right.** Across the whole pass, of 95,318
+candidates, 5,297 are classified BIPARTITE, and on every single one of them all
+three features are exactly zero — no exceptions:
+
+```
+candidates classified BIPARTITE : 5297 / 95318
+  conservation != 0             : 0
+  pass_through != 0             : 0
+  fast_forward != 0             : 0
+```
+
+**The second half — that this is why BIPARTITE recall is low — is wrong**, and
+it is wrong in a way that took a probe to see. The candidates `classify` calls
+BIPARTITE and the candidates that carry a labelled BIPARTITE *ring* are almost
+disjoint populations:
+
+| split | candidates | classified BIPARTITE | of those, bearing any ring | bearing a BIPARTITE ring |
+|---|---:|---:|---:|---:|
+| train | 73,835 | 4,095 | 9 | 3 |
+| held out | 21,483 | 1,202 | **0** | **0** |
+
+Not one of the 1,202 held-out candidates that `classify` calls BIPARTITE carries
+a labelled ring of any typology. The candidates that actually cover a BIPARTITE
+ring are classified MIXED (10 of 13 in train), CYCLE (2) and FAN-OUT (1), and
+their intermediary features are not zero — they are *higher* than on other
+ring-bearing candidates:
+
+| feature (train medians) | covering a BIPARTITE ring | covering another ring | ordinary |
+|---|---:|---:|---:|
+| pass_through | 0.667 | 0.462 | 0.250 |
+| conservation | 0.639 | 0.459 | 0.022 |
+| fast_forward | 0.839 | 0.869 | 0.477 |
+
+So the three strongest features are not silent on the candidates that carry
+BIPARTITE rings. The silence is real, but it is on a population that has nothing
+to do with the recall number.
+
+## The actual reason: a BIPARTITE ring is not a connected graph
+
+Running union-find inside each labelled ring's *own* subgraph, before any
+windowing or filtering:
+
+| typology | rings | median txns | median components | median largest component | largest/txns |
+|---|---:|---:|---:|---:|---:|
+| BIPARTITE | 49 | 4.0 | **4.0** | **1.0** | **0.25** |
+| STACK | 43 | 10.0 | 5.0 | 2.0 | 0.20 |
+| CYCLE | 54 | 4.0 | 1.0 | 4.0 | 1.00 |
+| FAN-IN | 40 | 8.0 | 1.0 | 8.0 | 1.00 |
+| FAN-OUT | 48 | 7.0 | 1.0 | 7.0 | 1.00 |
+| GATHER-SCATTER | 51 | 14.0 | 1.0 | 14.0 | 1.00 |
+| RANDOM | 41 | 3.0 | 1.0 | 3.0 | 1.00 |
+| SCATTER-GATHER | 44 | 14.0 | 1.0 | 14.0 | 1.00 |
+
+Every other typology is one connected component. **A labelled BIPARTITE ring is
+N transfers across N disjoint sender→receiver pairs** — 2N accounts, N senders,
+N receivers, and not one account shared between any two of them. It is a perfect
+matching, not a connected bipartite graph. The name describes the generator's
+role assignment, not a structure in the transfer graph.
+
+This is not an artefact of the ACH filter: the unfiltered ledger gives the
+identical table.
+
+WARREN links accounts that transact together. Disjoint pairs transact with
+nobody in common, so there is nothing to link, and the ring can never become one
+candidate. The train loss breakdown says the same thing from the other end —
+21 of 31 BIPARTITE rings are lost to "split/absorbed", with best-cover values of
+exactly 1/N (0.07, 0.08, 0.09…): a single stray transfer landing inside somebody
+else's candidate.
+
+| typology | rings (train) | covered | below MinTxns/MinAccounts | span > window | split/absorbed |
+|---|---:|---:|---:|---:|---:|
+| BIPARTITE | 31 | 9 | 1 | 0 | **21** |
+| STACK | 32 | 11 | 1 | **17** | 3 |
+| CYCLE | 42 | 38 | 2 | 0 | 2 |
+| GATHER-SCATTER | 33 | 21 | 2 | 10 | 0 |
+
+STACK's losses have a different cause — 17 of 32 span more than the 72h window —
+which is why a temporal feature could reach STACK and nothing here reaches
+BIPARTITE.
+
+## What the held-out denominator of 16 is actually made of
+
+The ranked evaluation restricts each ring to the transfers present in the split,
+so all 182 held-out rings are recoverable at full budget, BIPARTITE included
+(16/16). The 25.0% is therefore a genuine *ranking* failure and not a graph-pass
+ceiling. But the 16 are mostly fragments: **7 of them are a single transfer**,
+and ring 242 contributes 2 transfers of its real 13.
+
+```
+ring   txns in split   txns in ledger      ring   txns in split   txns in ledger
+234                5                8      292                1                1
+242                2               13      302                4                7
+245                6               12      303                1                1
+265                8               13      314                3                3
+267                1                1      338                1                2
+268                1                1      344                3                4
+275                1                1      348                2                2
+278                4                9      287                1                1
+```
+
+One ring is worth 6.25 points of BIPARTITE recall. Any measured movement smaller
+than about two rings is noise, and this is why the experiment below is reported
+as exploratory rather than as evidence.
+
+## The experiment: three features built on the partitions, not the intermediaries
+
+Three candidate features, each computable from the existing ledger, each
+interpretable in a sentence, each deliberately scale-free so it cannot earn a
+coefficient that means group size. Tests were written before the
+implementations, in `internal/detect/bipartite_test.go`.
+
+- **`partition_balance`** — how evenly the accounts that play exactly one role
+  split between the sending side and the receiving side; 1 when the sides match,
+  falling toward 0 for a fan. Intermediaries are excluded rather than assigned to
+  a side, so it cannot rise with `pass_through`. A pure cycle has no partitions
+  and scores 0, the same "no evidence" convention `conservation` uses.
+  *Why it might work:* a ring of disjoint pairs has as many senders as
+  receivers; ordinary traffic is full of fans.
+  *Failure mode:* any 1:1 group scores 1, including two unrelated payments that
+  landed in the same window.
+- **`pair_reuse`** — the share of transfers that are not the first along their
+  own directed sender→receiver relationship.
+  *Why it might work:* ordinary counterparties transact repeatedly; a generated
+  ring spends each relationship once, so the expected coefficient is negative.
+  *Failure mode:* close to `density`, which the model already has.
+- **`amount_uniformity`** — `1/(1+cv)` over transfer amounts; 1 when every
+  transfer moves the same amount, falling as they scatter. Scale-free by
+  construction, so it reads spread and not size.
+  *Why it might work:* a structured payout moves one size of payment.
+  *Failure mode:* a fixed-price merchant scores 1 as readily as a payout ring,
+  and a three-transfer group's cv is unstable.
+
+Each is exposed as its own feature set extending `temporal` in place
+(`bip-balance`, `bip-reuse`, `bip-uniform`, and `bipartite` for all three), so
+the ablation says which one carried anything rather than only whether the bundle
+did. `base` and `temporal` are untouched: re-running `-features temporal` after
+the change reproduces the published table byte for byte.
+
+## Results, held out, same geometry, same split, same thresholds, budget held fixed
+
+| set | prec@50 | rings@50 | prec@250 | rings@250 | prec@1000 | rings@1000 | recall@1000 | F1@1000 | FP value@1000 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `temporal` (baseline) | 14.32% | 39 | 7.29% | 76 | 3.55% | 108 | 59.63% | 0.0670 | 74.91bn |
+| `+partition_balance` | 15.21% | 38 | 7.36% | 76 | 3.55% | 107 | 59.63% | 0.0670 | 79.74bn |
+| `+pair_reuse` | **24.10%** | 40 | 7.78% | 78 | 3.73% | **115** | 63.42% | 0.0704 | 67.98bn |
+| `+amount_uniformity` | 16.62% | 40 | 7.10% | 72 | 3.54% | 106 | 58.33% | 0.0667 | 68.67bn |
+| all three | 23.16% | 40 | 7.51% | 77 | 3.74% | 113 | 61.36% | 0.0705 | 65.84bn |
+
+Per-typology recall at 1,000 alerts:
+
+| typology | `temporal` | `+balance` | `+reuse` | `+uniform` | all three |
+|---|---:|---:|---:|---:|---:|
+| **BIPARTITE** | **25.0%** | **25.0%** | **31.2%** | **25.0%** | **31.2%** |
+| FAN-OUT | 43.5% | 39.1% | 43.5% | 39.1% | 39.1% |
+| RANDOM | 50.0% | 50.0% | 55.6% | 50.0% | 55.6% |
+| FAN-IN | 61.9% | 61.9% | 66.7% | 61.9% | 66.7% |
+| GATHER-SCATTER | 67.6% | 67.6% | 73.0% | 67.6% | 70.3% |
+| STACK | 68.4% | 68.4% | 68.4% | 63.2% | 68.4% |
+| CYCLE | 70.8% | 70.8% | 79.2% | 70.8% | 79.2% |
+| SCATTER-GATHER | 70.8% | 70.8% | 70.8% | 70.8% | 70.8% |
+
+## The verdict on each feature
+
+**`partition_balance` — REJECT.** Coefficient −0.090, eleventh of thirteen.
+BIPARTITE recall unchanged at exactly 25.0%, one ring lost overall at 1,000
+alerts, FAN-OUT down 43.5% → 39.1%, and 4.8bn more innocent value held. The
+feature aimed most directly at bipartite structure did nothing for bipartite
+structure. That is the cleanest possible statement of the section's conclusion:
+the shape is not being missed for want of a description of its two sides.
+
+**`amount_uniformity` — REJECT.** Coefficient −0.220, and negative, which is
+already against the hypothesis that motivated it — uniform amounts *lower*
+suspicion here. BIPARTITE unchanged at 25.0%, two rings lost overall, STACK
+regressed 68.4% → 63.2%, precision down at 250 and 1,000. Buying nothing on the
+target shape at the cost of the other weak shape is the same trade §17 refused
+for the isolation forest.
+
+**`pair_reuse` — NEEDS MORE EVIDENCE, and it is not a bipartite feature.**
+
+It fits at **−0.922, the largest coefficient in the model**, ahead of
+`pass_through`. Precision at 50 alerts goes 14.32% → 24.10%, seven more rings at
+1,000, 6.9bn less innocent value held, and **no typology regresses**. That is the
+largest single-feature effect measured in this project.
+
+It is reported here and **not adopted**, for four reasons.
+
+1. **It is not the thing under test.** `pair_reuse` is general edge
+   concentration, not bipartite structure. It moved BIPARTITE by exactly one
+   ring out of sixteen — 25.0% → 31.2% — which by the fragment analysis above is
+   inside the noise. It improved six shapes at once, which is the signature of a
+   general feature, not of the hole being closed.
+2. **The mechanism may belong to the generator rather than to laundering.** The
+   claim is "a ring spends each relationship once". IBM AML is synthetic, and a
+   simulator that lays down patterns edge-wise would produce exactly this
+   signature whether or not real laundering does. Nothing here distinguishes
+   the two, and §"traps found and killed" is five entries long precisely because
+   a good number on this data has been wrong before.
+3. **It absorbs features already in the model.** `density` falls −0.432 →
+   −0.117 and `log_accounts` +0.367 → +0.066 when `pair_reuse` enters, and it
+   correlates with `density` at r = +0.732. Some of the gain is re-attribution,
+   not new information.
+4. **It was measured once, on a run that was a sanity check.** Adopting a
+   default from a single exploratory run is the thing this project's method
+   exists to prevent.
+
+What it is *not* is size in disguise, which was the first thing to suspect. It
+correlates with transfer count at r = +0.014, and the separation survives
+conditioning on group size — ring-bearing candidates sit below ordinary ones in
+every bucket:
+
+| txns | n ring | n ordinary | p50 ring | p50 ordinary |
+|---|---:|---:|---:|---:|
+| 3 | 55 | 5,683 | 0.000 | 0.000 |
+| 4–5 | 169 | 20,326 | 0.250 | 0.500 |
+| 6–8 | 198 | 22,103 | 0.333 | 0.625 |
+| 9–14 | 208 | 14,545 | 0.400 | 0.600 |
+| 15–25 | 230 | 7,145 | 0.381 | 0.565 |
+| 26–100 | 340 | 2,833 | 0.383 | 0.410 |
+
+So it is a real separation in this data, of unvalidated origin, on a feature
+nobody set out to build. It is left behind `-features bip-reuse` for whoever
+picks it up, and the shipped default stays `temporal`.
+
+## The conclusion
+
+**The bipartite hypothesis is rejected.** BIPARTITE underperformance is
+structural, and the structure is not the one previously recorded. It is not that
+the model's strongest features are silent on bipartite candidates — they are, but
+those candidates carry no rings. It is that **a labelled BIPARTITE ring is a set
+of disjoint sender→receiver pairs and therefore never becomes a candidate at
+all.** A detector that finds rings by connectivity cannot find a ring that has
+none.
+
+Improving it needs a new *representation of the two partitions* — a second
+linking criterion that can put unconnected pairs into one group on evidence
+other than a shared account, such as shared timing or a shared amount signature
+— and not another candidate-level feature. That is a change to the graph pass,
+not to the ranker, and it is out of scope here. Two features aimed squarely at
+bipartite structure were built, tested and measured, and both did nothing,
+which is the evidence for that conclusion rather than an assertion of it.
+
+---
+
+# 20. Can candidate construction represent a BIPARTITE ring at all?
+
+§19 established that a labelled BIPARTITE ring is a set of disjoint
+sender→receiver pairs and therefore never becomes one candidate, and concluded
+that the remaining question belongs to the graph pass rather than to the ranker.
+This section asks that question and answers it in the negative.
+
+**Nothing in the production detector was changed.** Every measurement below
+comes from a separate harness whose baseline arm reproduces
+`internal/detect.detectWindow` exactly — 95,318 candidates, 270/363 rings,
+0.18% purity, BIPARTITE 17/45, STACK 13/40 — the published graph-pass figures,
+checked before any hypothesis was believed.
+
+## 20.1 How links are actually created, and where the safeguard lives
+
+There are two linking systems in this repository and they are not the same
+system.
+
+- **IEEE-CIS (`internal/graph.Build`)** links accounts by *shared values* —
+  device fingerprint, card number — under two protections: `LinkRule.MaxFanout`,
+  which discards a value shared by too many accounts as demographic, and
+  `Config.MinCorroboration = 2`, which requires two independent shared values
+  before a link is believed. This is the system in which one shared value
+  chained 2,219 plausible links into an 8,930-account pseudo-ring (§8, trap 2).
+- **IBM AML (`internal/detect.detectWindow`)** links accounts by an *actual
+  transfer between them*. Union-find over `(t.From, t.To)` inside a 72h window,
+  with `MaxAccountDegree = 60` excluding hubs from linking before any group
+  forms. There is no shared-value linking on this path at all, and therefore no
+  `MinCorroboration` — an edge is a payment, not an inference.
+
+This matters for scope. Any second-order rule proposed for BIPARTITE would be
+**the first similarity-based link on the AML path** — introducing exactly the
+class of mechanism that produced the giant component on the other dataset, into
+the pipeline that carries the published numbers.
+
+## 20.2 Where the labelled rings disappear, precisely
+
+A BIPARTITE ring of N transfers is N components of one transfer and two accounts
+each. Each fails `MinTxns = 3` and `MinAccounts = 3` on its own. The ring's
+transfers reach a candidate only by being absorbed into unrelated background
+traffic, one at a time, which is why the best-cover values are exactly 1/N.
+
+So the loss is not at ranking, not at the size caps, and not at the degree cap.
+**It is at the point where a component must contain at least three accounts
+before it is called a candidate**, and the ring supplies two.
+
+## 20.3 What tolerance a second-order link would have to have
+
+For a "link transfers within Δ" rule to pull one ring's N components together,
+every consecutive gap inside the ring must be under Δ. The minimum workable Δ is
+therefore the ring's own largest consecutive gap. Measured over the 45 labelled
+BIPARTITE rings in the working ledger, against how much of the ledger sits
+inside that Δ:
+
+| | tolerance demanded | ledger transfers inside it | accounts inside it |
+|---|---:|---:|---:|
+| p10 ring | 4.02 h | 9,334 | 14,882 |
+| **median ring** | **12.50 h** | **33,701** | **44,189** |
+| tightest ring (314) | 2.67 h | 3,202 | 5,025 |
+| widest ring (89) | 31.15 h | 38,529 | 43,078 |
+
+The same question for amounts. Sorting each ring's amounts and taking the worst
+consecutive ratio — the narrowest band that could chain them all:
+
+```
+worst consecutive amount ratio inside a ring:  p10 = 3.24x   p50 = 16.72x   p90 = 57.15x
+```
+
+A band narrow enough to mean something (2×) cannot chain the median ring. A band
+wide enough to chain it (16.7×) admits every amount within that multiple of
+every other, which in a ledger spanning nine orders of magnitude is most of it.
+
+**The two conditions are in direct opposition.** The corroborator that would
+make a timing rule safe is precisely the one these rings fail.
+
+## 20.4 What an uncorroborated timing link builds
+
+One 72h window holding 175,204 transfers, linking transfers within Δ and
+unioning their accounts:
+
+| Δ | components | largest (accounts) | share of window |
+|---|---:|---:|---:|
+| none (production) | 31,945 | 257 | 0.3% |
+| 1 minute | **1** | **101,334** | **100%** |
+| 10 minutes | 1 | 101,334 | 100% |
+| 1 hour | 1 | 101,334 | 100% |
+| 12.5 hours | 1 | 101,334 | 100% |
+
+At roughly 2,433 transfers an hour, consecutive transfers are almost always
+within a minute of each other, so the relation is transitively closed and the
+entire window becomes one component. **101,334 accounts is 11× the 8,930-account
+failure that trap 2 was written about.** Timing alone is not a weak rule; it is
+the same rule that already destroyed this project once, in a denser ledger.
+
+## 20.5 The corroborated hypotheses, measured end to end
+
+Four rules, each demanding two independent conditions, each with a fanout cap of
+20 in the spirit of `LinkRule.MaxFanout`. Same ledger, same active-period
+trimming, same 72h/24h geometry, same `Cover ≥ 0.5` and `Purity ≥ 0.5`.
+
+| hypothesis | candidates | largest component | graph recall | purity | **BIPARTITE** | innocent accounts |
+|---|---:|---:|---:|---:|---:|---:|
+| **baseline (production)** | 95,318 | **3,220** | **270/363** | **0.18%** | **17/45** | **146,526** |
+| within 1h + same bank pair | 73,951 | 48,172 | 190/363 | 0.15% | 15/45 | 131,467 |
+| within 1h + amounts ≤2× | 81,150 | 31,095 | 208/363 | 0.17% | 15/45 | 131,245 |
+| within 12.5h + amounts ≤2× | 94,590 | 5,558 | 256/363 | 0.18% | 17/45 | 145,388 |
+| within 1h + amounts ≤20× | 93,031 | 10,338 | 249/363 | 0.18% | 17/45 | 143,277 |
+
+Per-typology graph recall:
+
+| hypothesis | BIP | CYCLE | FAN-IN | FAN-OUT | G-S | RANDOM | S-G | STACK |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | 17/45 | 49/54 | 34/40 | 43/48 | 41/51 | 36/41 | 37/44 | 13/40 |
+| 1h + banks | 15/45 | 37/54 | 22/40 | 33/48 | 22/51 | 28/41 | 23/44 | 10/40 |
+| 1h + amt2× | 15/45 | 42/54 | 23/40 | 35/48 | 27/51 | 31/41 | 25/44 | 10/40 |
+| 12.5h + amt2× | 17/45 | 46/54 | 31/40 | 42/48 | 38/51 | 35/41 | 35/44 | 12/40 |
+| 1h + amt20× | 17/45 | 45/54 | 28/40 | 42/48 | 37/51 | 34/41 | 34/44 | 12/40 |
+
+**Not one hypothesis improved BIPARTITE recall.** Two left it unchanged and two
+made it worse. Every one of them cost overall graph recall — up to 80 rings —
+and damaged every other typology, GATHER-SCATTER worst at 41/51 → 22/51.
+
+## 20.6 Why merging does not help: the safeguard deletes what the merge builds
+
+The mechanism is worth stating exactly, because "the components merged and
+recall still did not rise" is otherwise surprising. Tracking where each labelled
+BIPARTITE ring's transfers landed:
+
+| hypothesis | component holding the ring (p50) | (p90) | rings pushed over the 60-account cap |
+|---|---:|---:|---:|
+| 1h + same bank pair | 18,229 accounts | 48,172 | **27 of 45** |
+| 1h + amounts ≤2× | 13,491 accounts | 31,095 | **27 of 45** |
+| 12.5h + amounts ≤2× | 17 accounts | 828 | 18 of 45 |
+| 1h + amounts ≤20× | 17 accounts | 10,338 | 17 of 45 |
+
+Under the tighter rules the ring does not end up in a candidate — it ends up in
+a **13,000 to 18,000-account blob**, which `summarise` then discards for
+exceeding `MaxAccounts = 60`. The extra linking does not construct the ring; it
+dissolves the ring into the ledger, and the anti-giant-component safeguard
+correctly deletes the result.
+
+Under the looser-but-smaller rules the median component stays at 17 accounts and
+BIPARTITE still does not move, because the transfers being joined are not the
+ring's. The rule links things that are near in time and amount, and the ring's
+own pairs are neither — 12.5h apart with amounts spread 16.7×.
+
+**Both horns are measured.** Tight enough to be safe never connects the ring;
+loose enough to connect it produces a component the safeguard must discard, and
+damages six other typologies on the way.
+
+## 20.7 Is there any second-order relationship at all?
+
+Every hypothesis named in the brief, measured against a control of random
+transfers drawn from the same window and matched in size — because "the amounts
+are similar" is a statement about the ledger unless a control says otherwise.
+
+| property | BIPARTITE rings | random control | other typologies |
+|---|---:|---:|---:|
+| distinct amounts / transfers | 1.000 | 1.000 | 0.982 |
+| amount cv | 1.612 | 1.851 | 0.692 |
+| rings with all amounts equal | 0% | 0% | 0% |
+| distinct sender entities / transfers | 1.000 | 1.000 | 0.805 |
+| distinct receiver entities / transfers | 0.998 | 1.000 | 0.782 |
+| rings with a repeated sender entity | 0.0% | 0.0% | 35.8% |
+| rings with a repeated receiver entity | 3.2% | 0.0% | 38.7% |
+| distinct from-banks / transfers | 0.960 | 0.993 | 0.781 |
+| rings with a repeated bank pair | 6.5% | 0.0% | 9.5% |
+| span (hours) | 34.3 | 46.7 | 67.9 |
+| max gap between transfers (hours) | 12.5 | 17.3 | 23.0 |
+
+And **shared counterpart structure** — the one genuinely structural hypothesis,
+a real relationship rather than a similarity — computed over the *full
+unfiltered* 5,078,345-transfer ledger, asking whether two senders of the same
+ring share any counterparty outside the ring:
+
+| | BIPARTITE rings | other typologies | random control |
+|---|---:|---:|---:|
+| sender pairs sharing a counterparty (p50) | 0.000 | 0.000 | 0.000 |
+| receiver pairs sharing a counterparty (p50) | 0.000 | 0.000 | 0.000 |
+| **rings with ANY shared counterparty** | **24.1%** | 21.4% | **44.8%** |
+
+The control is *higher* than the rings. There is no shared counterpart
+structure to find.
+
+So, hypothesis by hypothesis:
+
+- **common timing structure** — the only axis that differs from the control at
+  all (34.3h span against 46.7h), and far too weak to link on: the tolerance the
+  rings demand contains 33,701 transfers.
+- **shared amount pattern** — dead. Every amount inside a ring is distinct, and
+  the amount cv is *lower* than the control's.
+- **synchronised activity** — the same measurement as timing, and the same
+  answer.
+- **sender/receiver behavioural similarity** — dead. Sender entities are as
+  distinct as the control's to three decimal places; banks are at control level.
+- **repeated structural motifs** — the ring *is* N repetitions of one motif, and
+  that motif is "one account pays one other account", the single most common
+  structure in the ledger. A motif that matches every pair in the data
+  discriminates nothing.
+- **shared counterpart structure** — dead, and pointing the wrong way.
+
+## 20.8 On a different candidate representation
+
+The brief asks whether BIPARTITE needs a two-part candidate whose evidence is
+aggregated across several disconnected transaction components, rather than being
+forced into one ordinary connected component. The design is straightforward to
+describe:
+
+> A **bipartite candidate** would be a pair of account sets (S, R) together with
+> a set of transfers from S to R, admitted without requiring the induced
+> subgraph to be connected. Its evidence would be whatever binds the members of
+> S to each other and the members of R to each other — a shared attribute, a
+> shared counterparty, a shared controller — and the candidate would carry the
+> strength of that binding as a feature, so a weakly bound set ranks below a
+> strongly bound one.
+
+**It cannot be built on this data, and the reason is not the representation.**
+A two-part candidate needs binding evidence to aggregate, and §20.7 measures
+every available binding to be at or below the level of randomly chosen
+transfers. Without one, the representation degenerates: "any N sender→receiver
+pairs in a window" describes an astronomical number of subsets, of which the
+labelled ring is one, and nothing measured distinguishes it.
+
+The honest reading is that these rings may be **unlearnable by construction**.
+IBM AML is a synthetic multi-agent simulator, and if it assigns BIPARTITE pairs
+without giving them any shared covariate, then the only thing identifying the
+N pairs as one operation is the label itself. That is consistent with every
+measurement here, and it is a statement about the dataset rather than about the
+detector. It is also not falsifiable from inside the dataset, which is why it is
+offered as a reading and not as a finding.
+
+What would change the answer is a field this data does not have: an IP address,
+a device, a beneficiary name, a KYC handler, a session — the corroborating
+second value that `internal/graph.MinCorroboration` exists to demand. On
+IEEE-CIS such fields existed and the same architecture used them. Here they do
+not.
+
+## 20.9 Conclusion — (C) insufficient evidence to alter candidate construction
+
+**No change is made to linking, to candidate construction, or to the detector.**
+
+- No hypothesis improved BIPARTITE recall; the best two left it at exactly 17/45.
+- Every hypothesis reduced overall graph recall, by 14 to 80 rings.
+- Every hypothesis damaged every other typology.
+- Every hypothesis inflated the largest component, from 3,220 accounts to
+  between 5,558 and 48,172 — and the uncorroborated form reaches 101,334, which
+  is the trap-2 failure at 11× scale.
+- The anti-giant-component safeguards were never weakened, and are the reason
+  three quarters of the merged rings were discarded rather than flagged.
+
+BIPARTITE recall stays at 25.0% at 1,000 alerts and 37.8% at the graph pass,
+and it is now understood: **the ring supplies two accounts where a candidate
+requires three, and none of the relationships measured here supplied a third.**
+That is a limit established by measurement on this dataset, not a proof that no
+such relationship exists — a field this data lacks could still supply one.
